@@ -7,7 +7,18 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "npm run test:all",
+    "test:all": "npm run test:frontend && npm run test:backend",
+    "test:frontend": "vitest run",
+    "test:frontend:watch": "vitest",
+    "test:frontend:unit": "vitest run --reporter=dot -t unit_",
+    "test:frontend:integration": "vitest run --reporter=dot -t integration_",
+    "test:frontend:e2e": "playwright test",
+    "test:backend": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:backend:unit": "cargo test --manifest-path src-tauri/Cargo.toml unit_",
+    "test:backend:integration": "cargo test --manifest-path src-tauri/Cargo.toml integration_",
+    "test:backend:e2e": "cargo test --manifest-path src-tauri/Cargo.toml e2e_"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -31,11 +42,17 @@
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^28.1.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.0.18"
   }
 }

@@ -376,3 +376,36 @@ Synthesize this debate into a clear recommendation. Structure your response as:
 [Specific next steps with timeline]"#
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn unit_agent_registry_has_expected_keys_and_labels() {
+        let debaters = Agent::all_debaters();
+        assert_eq!(debaters.len(), 5);
+        assert_eq!(debaters[0].key(), "rationalist");
+        assert_eq!(debaters[0].label(), "Rationalist");
+        assert_eq!(Agent::Moderator.key(), "moderator");
+        assert_eq!(Agent::Moderator.label(), "Moderator");
+    }
+
+    #[test]
+    fn integration_init_agent_files_creates_defaults_and_respects_overrides() {
+        let dir = tempdir().expect("temp directory should exist");
+        let app_data_dir = dir.path().to_path_buf();
+
+        init_agent_files(&app_data_dir).expect("agent files should initialize");
+        let files = read_all_agent_files(&app_data_dir).expect("agent files should load");
+        assert_eq!(files.len(), 6);
+        assert_eq!(files[0].filename, "rationalist.md");
+        assert_eq!(files[5].filename, "moderator.md");
+
+        write_agent_file(&app_data_dir, "rationalist.md", "custom prompt")
+            .expect("agent file should write");
+        let custom_prompt = read_agent_prompt(&app_data_dir, &Agent::Rationalist);
+        assert_eq!(custom_prompt, "custom prompt");
+    }
+}

@@ -74,6 +74,13 @@ ollama pull llama3.1:8b
 - `npm run tauri dev` - full desktop development mode
 - `npm run build` - frontend production build
 - `npm run tauri build` - desktop production build/bundles
+- `npm run test:frontend:unit` - frontend unit tests (Vitest)
+- `npm run test:frontend:integration` - frontend integration tests (Vitest)
+- `npm run test:frontend:e2e` - frontend e2e tests (Playwright)
+- `npm run test:backend:unit` - backend unit tests (Cargo)
+- `npm run test:backend:integration` - backend integration tests (Cargo)
+- `npm run test:backend:e2e` - backend e2e tests (Cargo)
+- `npm run test:all` - run frontend + backend test suites
 
 ## Local App Data
 

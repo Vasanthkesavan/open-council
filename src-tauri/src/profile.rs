@@ -85,3 +85,50 @@ pub fn read_all_profiles_detailed(app_data_dir: &PathBuf) -> Result<Vec<ProfileF
     files.sort_by(|a, b| a.filename.cmp(&b.filename));
     Ok(files)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn integration_writes_reads_and_sorts_profile_files() {
+        let dir = tempdir().expect("temp directory should exist");
+        let app_data_dir = dir.path().to_path_buf();
+
+        write_profile_file(&app_data_dir, "career.md", "# Career\n- Engineer")
+            .expect("career profile should save");
+        write_profile_file(&app_data_dir, "values.md", "# Values\n- Family")
+            .expect("values profile should save");
+
+        let profiles = read_all_profiles(&app_data_dir).expect("profiles should load");
+        assert_eq!(
+            profiles.get("career.md").map(String::as_str),
+            Some("# Career\n- Engineer")
+        );
+        assert_eq!(
+            profiles.get("values.md").map(String::as_str),
+            Some("# Values\n- Family")
+        );
+
+        let detailed = read_all_profiles_detailed(&app_data_dir).expect("detailed profiles should load");
+        assert_eq!(detailed.len(), 2);
+        assert_eq!(detailed[0].filename, "career.md");
+        assert_eq!(detailed[1].filename, "values.md");
+        assert!(detailed[0].size_bytes > 0);
+    }
+
+    #[test]
+    fn unit_delete_profile_file_is_idempotent() {
+        let dir = tempdir().expect("temp directory should exist");
+        let app_data_dir = dir.path().to_path_buf();
+
+        let first = delete_profile_file(&app_data_dir, "missing.md")
+            .expect("deleting missing file should not fail");
+        assert_eq!(first, "File missing.md does not exist");
+
+        write_profile_file(&app_data_dir, "notes.md", "content").expect("file should save");
+        let deleted = delete_profile_file(&app_data_dir, "notes.md").expect("file should delete");
+        assert_eq!(deleted, "Successfully deleted notes.md");
+    }
+}

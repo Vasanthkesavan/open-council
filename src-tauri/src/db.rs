@@ -468,3 +468,145 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decisions;
+    use serde_json::json;
+
+    fn new_test_db() -> Database {
+        Database::new(":memory:").expect("in-memory database should initialize")
+    }
+
+    #[test]
+    fn integration_creates_conversation_and_reads_messages() {
+        let db = new_test_db();
+        let conversation = db
+            .create_conversation("Career planning")
+            .expect("conversation should be created");
+
+        db.add_message(&conversation.id, "user", "I need help deciding")
+            .expect("user message should save");
+        db.add_message(&conversation.id, "assistant", "Let's break this down")
+            .expect("assistant message should save");
+
+        let messages = db
+            .get_messages(&conversation.id)
+            .expect("messages should load");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "assistant");
+    }
+
+    #[test]
+    fn integration_delete_conversation_removes_messages_decision_and_debate_rounds() {
+        let db = new_test_db();
+        let conversation = db
+            .create_conversation_with_type("Move cities?", "decision")
+            .expect("decision conversation should be created");
+        let decision = db
+            .create_decision(&conversation.id, "Move cities?")
+            .expect("decision should be created");
+
+        db.add_message(&conversation.id, "user", "Thinking about relocating")
+            .expect("message should save");
+        db.save_debate_round(&decision.id, 1, 1, "rationalist", "Opening take")
+            .expect("debate round should save");
+
+        db.delete_conversation(&conversation.id)
+            .expect("conversation should delete");
+
+        assert!(
+            db.get_conversation(&conversation.id)
+                .expect("conversation query should succeed")
+                .is_none()
+        );
+        assert_eq!(
+            db.get_messages(&conversation.id)
+                .expect("message query should succeed")
+                .len(),
+            0
+        );
+        assert!(
+            db.get_decision(&decision.id)
+                .expect("decision query should succeed")
+                .is_none()
+        );
+        assert_eq!(
+            db.get_debate_rounds(&decision.id)
+                .expect("debate round query should succeed")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn e2e_decision_lifecycle_from_exploring_to_reviewed() {
+        let db = new_test_db();
+        let conversation = db
+            .create_conversation_with_type("Should I take the offer?", "decision")
+            .expect("decision conversation should be created");
+        let decision = db
+            .create_decision(&conversation.id, "Should I take the offer?")
+            .expect("decision should be created");
+
+        db.add_message(&conversation.id, "user", "I have two job options")
+            .expect("user message should save");
+        db.add_message(&conversation.id, "assistant", "Let's compare tradeoffs")
+            .expect("assistant message should save");
+
+        let summary_update = json!({
+            "options": [
+                {"label": "Stay", "description": "Current job"},
+                {"label": "Leave", "description": "New offer"}
+            ],
+            "variables": [
+                {"label": "Compensation", "value": "20% increase", "impact": "high"}
+            ]
+        });
+        let merged = decisions::merge_summary(None, &summary_update);
+        db.update_decision_summary(&decision.id, &merged)
+            .expect("summary should update");
+        db.update_decision_status(&decision.id, "analyzing")
+            .expect("status should update to analyzing");
+
+        db.update_debate_started(&decision.id)
+            .expect("debate should start");
+        db.save_debate_round(&decision.id, 1, 1, "rationalist", "Option Leave has better EV")
+            .expect("debate round should save");
+        db.save_debate_round(&decision.id, 99, 1, "moderator", "Recommend Leave")
+            .expect("moderator round should save");
+        db.update_debate_completed(&decision.id)
+            .expect("debate should complete");
+        db.update_decision_status(&decision.id, "recommended")
+            .expect("status should update to recommended");
+
+        db.update_decision_choice(&decision.id, "Leave", Some("Better long-term growth"))
+            .expect("choice should save");
+        db.update_decision_outcome(&decision.id, "Took offer and it improved trajectory")
+            .expect("outcome should save");
+
+        let final_decision = db
+            .get_decision(&decision.id)
+            .expect("decision query should succeed")
+            .expect("decision should exist");
+
+        assert_eq!(final_decision.status, "reviewed");
+        assert_eq!(final_decision.user_choice.as_deref(), Some("Leave"));
+        assert_eq!(
+            final_decision.outcome.as_deref(),
+            Some("Took offer and it improved trajectory")
+        );
+        assert!(final_decision.debate_started_at.is_some());
+        assert!(final_decision.debate_completed_at.is_some());
+        assert!(final_decision.summary_json.is_some());
+
+        let rounds = db
+            .get_debate_rounds(&decision.id)
+            .expect("debate rounds should load");
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[0].round_number, 1);
+        assert_eq!(rounds[1].round_number, 99);
+    }
+}

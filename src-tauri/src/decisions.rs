@@ -70,3 +70,78 @@ fn merge_array_by_key(existing: Vec<Value>, new_items: &[Value], key: &str) -> V
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_merge_summary_merges_arrays_by_key_and_replaces_recommendation() {
+        let existing = json!({
+            "options": [
+                {"label": "Stay", "description": "Current role"}
+            ],
+            "variables": [
+                {"label": "Salary", "value": "$100k", "impact": "medium"}
+            ],
+            "pros_cons": [
+                {"option": "Stay", "pros": ["Stable"], "cons": ["Slow growth"]}
+            ],
+            "recommendation": {
+                "choice": "Stay",
+                "confidence": "low",
+                "reasoning": "Default"
+            }
+        })
+        .to_string();
+
+        let update = json!({
+            "options": [
+                {"label": "Stay", "description": "Known team"},
+                {"label": "Leave", "description": "Higher upside"}
+            ],
+            "variables": [
+                {"label": "Salary", "value": "$130k", "impact": "high"}
+            ],
+            "pros_cons": [
+                {"option": "Leave", "pros": ["Growth"], "cons": ["Risk"]}
+            ],
+            "recommendation": {
+                "choice": "Leave",
+                "confidence": "high",
+                "reasoning": "Higher long-term upside"
+            }
+        });
+
+        let merged = merge_summary(Some(&existing), &update);
+        let merged_json: Value = serde_json::from_str(&merged).expect("merged summary should be valid json");
+
+        let options = merged_json["options"].as_array().expect("options should be an array");
+        assert_eq!(options.len(), 2);
+        assert!(
+            options
+                .iter()
+                .any(|o| o["label"] == "Stay" && o["description"] == "Known team")
+        );
+        assert!(options.iter().any(|o| o["label"] == "Leave"));
+
+        assert_eq!(merged_json["variables"][0]["value"], "$130k");
+        assert_eq!(merged_json["pros_cons"].as_array().expect("pros_cons array").len(), 2);
+        assert_eq!(merged_json["recommendation"]["choice"], "Leave");
+    }
+
+    #[test]
+    fn unit_merge_summary_recovers_from_invalid_existing_json() {
+        let update = json!({
+            "variables": [
+                {"label": "Risk tolerance", "value": "Medium"}
+            ]
+        });
+
+        let merged = merge_summary(Some("not-json"), &update);
+        let merged_json: Value = serde_json::from_str(&merged).expect("merged summary should be valid json");
+
+        assert_eq!(merged_json["variables"].as_array().expect("variables array").len(), 1);
+        assert_eq!(merged_json["variables"][0]["label"], "Risk tolerance");
+    }
+}

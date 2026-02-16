@@ -557,3 +557,77 @@ fn extract_bold_value(text: &str, label: &str) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_extract_section_reads_content_until_next_heading() {
+        let content = r#"
+## Where the Committee Agreed
+- Shared value
+- Shared risk
+
+## Key Disagreements
+- Cost vs growth
+"#;
+
+        let section = extract_section(content, "Where the Committee Agreed");
+        assert!(section.contains("Shared value"));
+        assert!(!section.contains("Key Disagreements"));
+    }
+
+    #[test]
+    fn unit_split_to_points_strips_bullets_and_empty_lines() {
+        let points = split_to_points(
+            r#"
+- First
+* Second
+
+Third
+"#,
+        );
+        assert_eq!(points, vec!["First", "Second", "Third"]);
+    }
+
+    #[test]
+    fn unit_parse_moderator_recommendation_extracts_choice_confidence_and_steps() {
+        let full_text = r#"
+## Recommendation
+**Choice**: Option B
+**Confidence**: High
+**Reasoning**: Better upside with manageable risk.
+
+## What You're Giving Up
+- Predictability
+- Familiar team
+
+## Action Plan
+- Call recruiter today
+- Draft a 90-day transition plan
+"#;
+
+        let rec_section = extract_section(full_text, "Recommendation");
+        let recommendation =
+            parse_moderator_recommendation(&rec_section, full_text).expect("recommendation should parse");
+
+        assert_eq!(recommendation["choice"], "Option B");
+        assert_eq!(recommendation["confidence"], "high");
+        assert_eq!(recommendation["reasoning"], "Better upside with manageable risk.");
+        assert_eq!(
+            recommendation["next_steps"][0],
+            "Call recruiter today"
+        );
+        assert_eq!(
+            recommendation["tradeoffs"],
+            "- Predictability\n- Familiar team"
+        );
+    }
+
+    #[test]
+    fn unit_parse_moderator_recommendation_returns_none_without_recommendation_fields() {
+        let no_recommendation = "## Where the Committee Agreed\n- Point A";
+        assert!(parse_moderator_recommendation("", no_recommendation).is_none());
+    }
+}

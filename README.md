@@ -1,30 +1,48 @@
 # Decision Copilot
 
-Decision Copilot is a desktop app built with Tauri, React, TypeScript, and Rust.
+Decision Copilot is a Tauri desktop app for personal decision support. It combines:
+- long-running chat memory about the user (local markdown profile files),
+- structured decision analysis (options, variables, recommendation),
+- a multi-agent committee debate that stress-tests a decision from different viewpoints.
 
-It helps users make better decisions by:
-- keeping conversation history
-- maintaining local markdown profile files over time
-- supporting both cloud and local LLM providers:
-  - Anthropic API
-  - Ollama (local models)
+## What Is Implemented
+
+- Chat workspace for general conversation and context gathering.
+- Decision workspace with:
+  - decision-specific chat,
+  - live structured summary panel (`options`, `variables`, `pros_cons`, `recommendation`),
+  - status progression through the decision lifecycle.
+- Committee workflow:
+  - 5 debating agents (`rationalist`, `advocate`, `contrarian`, `visionary`, `pragmatist`),
+  - 1 moderator synthesis,
+  - quick and full debate modes,
+  - streamed tokens and persisted debate transcript.
+- Outcome logging and reflection:
+  - user logs what happened after choosing,
+  - app sends a reflection prompt back through the assistant flow so profile memory can improve.
+- Editable local files:
+  - profile memory markdown files,
+  - committee agent prompt markdown files,
+  - optional per-agent model overrides.
 
 ## Tech Stack
 
-- Frontend: React 19 + Vite + TypeScript + Tailwind CSS
-- Desktop shell/backend: Tauri 2 + Rust
-- Storage: SQLite (local)
+- Frontend: React 19, Vite, TypeScript, Tailwind CSS v4, Radix UI
+- Desktop + backend: Tauri 2, Rust
+- Storage:
+  - SQLite (`database.sqlite`) for conversations, messages, decisions, debate rounds
+  - local markdown files for profile and agent prompts
+  - local JSON config for API key/model settings
+- LLM routing: OpenRouter Chat Completions API (streaming + tool calls)
 
 ## Prerequisites
 
 - Node.js 20+ and npm
-- Rust (stable) and Cargo
-- Tauri system prerequisites for your OS (WebView2 on Windows)
+- Rust stable and Cargo
+- Tauri system prerequisites for your OS
+  - Windows: WebView2 runtime
 
-Optional (if using local models):
-- Ollama installed and running
-
-## Local Development
+## Quick Start
 
 1. Install dependencies:
 
@@ -32,83 +50,76 @@ Optional (if using local models):
 npm install
 ```
 
-2. Start the desktop app in dev mode:
+2. Start the desktop app:
 
 ```bash
 npm run tauri dev
 ```
 
-This starts:
-- Vite dev server on `http://localhost:1420`
-- the Tauri desktop app window
+This launches Vite at `http://localhost:1420` and opens the Tauri window.
+Port `1420` is fixed (`strictPort: true`).
 
-Note: port `1420` is fixed (`strictPort: true`), so make sure nothing else is using it.
+3. First run setup in Settings:
+- add your OpenRouter API key (`openrouter.ai/keys`),
+- choose a default model (for example `anthropic/claude-sonnet-4-5`),
+- save.
 
-## First Run Setup
+## Decision Lifecycle
 
-When the app opens, go to Settings and pick a provider.
+Decisions move through these statuses:
 
-### Anthropic
+- `exploring`: decision context is still being collected
+- `analyzing`: structured variables/options are taking shape
+- `debating`: committee debate is running
+- `recommended`: recommendation is ready
+- `decided`: user has made a choice
+- `reviewed`: user logged the real-world outcome
 
-- Select `Anthropic API`
-- Add your Anthropic API key
-- Choose a model (default: `claude-sonnet-4-5-20250929`)
+## Local Data
 
-### Ollama
-
-1. Start Ollama
-2. Pull a model, for example:
-
-```bash
-ollama pull llama3.1:8b
-```
-
-3. In app Settings:
-- Select `Ollama (Local)`
-- Keep URL as `http://localhost:11434` (or set your custom endpoint)
-- Set your model name
-
-## Useful Scripts
-
-- `npm run dev` - starts Vite only (web UI, no Tauri backend)
-- `npm run tauri dev` - full desktop development mode
-- `npm run build` - frontend production build
-- `npm run tauri build` - desktop production build/bundles
-- `npm run test:frontend:unit` - frontend unit tests (Vitest)
-- `npm run test:frontend:integration` - frontend integration tests (Vitest)
-- `npm run test:frontend:e2e` - frontend e2e tests (Playwright)
-- `npm run test:backend:unit` - backend unit tests (Cargo)
-- `npm run test:backend:integration` - backend integration tests (Cargo)
-- `npm run test:backend:e2e` - backend e2e tests (Cargo)
-- `npm run test:all` - run frontend + backend test suites
-
-## Automated Release Binaries
-
-GitHub Actions builds and uploads Windows/macOS/Linux binaries only when a release is published.
-
-Workflow:
-- `.github/workflows/release.yml`
-- Trigger: `release.published`
-- Output: release assets attached to that published release
-
-Signing:
-- No code-signing or notarization is configured in CI.
-- Assets are generated unsigned for all platforms.
-
-Release steps:
-1. Update `version` in `src-tauri/tauri.conf.json` (and keep `package.json` version aligned).
-2. Commit and push to `main`.
-3. Create a Git tag (example: `v0.2.0`) and push it.
-4. Create a GitHub Release from that tag and publish it.
-5. The workflow builds all targets and uploads artifacts to that release.
-
-## Local App Data
-
-On Windows, app data is stored under:
+The app uses Tauri `app_data_dir`.
+On Windows this is typically:
 
 `%APPDATA%\com.decisioncopilot.app\`
 
-Important files:
-- `database.sqlite` - conversations and messages
-- `config.json` - provider and model settings
-- `profile\*.md` - user profile memory files
+Key files/folders:
+- `database.sqlite`
+- `config.json`
+- `profile/*.md`
+- `agents/*.md`
+
+Notes:
+- `config.json` stores the OpenRouter API key and model settings locally.
+- Profile and agent files are editable from the app UI and via your file explorer.
+
+## Commands
+
+- `npm run dev`: Vite web dev server only (no Tauri backend process)
+- `npm run tauri dev`: full desktop app dev mode
+- `npm run build`: frontend production build
+- `npm run tauri build`: desktop production build/bundle
+- `npm run test`: all frontend + backend tests
+- `npm run test:all`: same as above
+- `npm run test:frontend`: Vitest frontend suite
+- `npm run test:frontend:watch`: Vitest watch mode
+- `npm run test:frontend:unit`: frontend tests matching `unit_`
+- `npm run test:frontend:integration`: frontend tests matching `integration_`
+- `npm run test:frontend:e2e`: Playwright tests
+- `npm run test:backend`: full Cargo test suite (`src-tauri/Cargo.toml`)
+- `npm run test:backend:unit`: backend tests matching `unit_`
+- `npm run test:backend:integration`: backend tests matching `integration_`
+- `npm run test:backend:e2e`: backend tests matching `e2e_`
+
+## Testing Notes
+
+- Frontend integration/e2e tests mock Tauri `invoke` so they can run in browser test environments.
+- Backend tests run against in-memory/temp SQLite and temp filesystem directories.
+
+## Release Automation
+
+Release binaries are built by GitHub Actions on published GitHub Releases:
+- workflow: `.github/workflows/release.yml`
+- trigger: `release.published`
+- targets: Linux x64, Windows x64, macOS arm64, macOS x64
+
+Current CI config does not include code signing/notarization.

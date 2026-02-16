@@ -1,3 +1,4 @@
+use crate::agents;
 use crate::config::{self, AppConfig, Provider};
 use crate::db::{Database, DebateRound, Decision};
 use crate::debate;
@@ -321,6 +322,41 @@ pub fn remove_profile_file(state: State<'_, Mutex<AppState>>, filename: String) 
     let state = state.lock().map_err(|e| e.to_string())?;
     profile::delete_profile_file(&state.app_data_dir, &filename)?;
     Ok(())
+}
+
+// ── Committee Agent Commands ──
+
+#[tauri::command]
+pub fn get_agent_files(state: State<'_, Mutex<AppState>>) -> Result<Vec<agents::AgentFileInfo>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    agents::read_all_agent_files(&state.app_data_dir)
+}
+
+#[tauri::command]
+pub fn update_agent_file(state: State<'_, Mutex<AppState>>, filename: String, content: String) -> Result<agents::AgentFileInfo, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    agents::write_agent_file(&state.app_data_dir, &filename, &content)?;
+    let dir = agents::get_agents_dir(&state.app_data_dir);
+    let path = dir.join(&filename);
+    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let modified = metadata.modified().map_err(|e| e.to_string())?;
+    let modified_at = chrono::DateTime::<chrono::Utc>::from(modified)
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    Ok(agents::AgentFileInfo {
+        filename,
+        content,
+        modified_at,
+        size_bytes: metadata.len(),
+    })
+}
+
+#[tauri::command]
+pub fn open_agents_folder(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    let dir = agents::get_agents_dir(&state.app_data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().to_string())
 }
 
 // ── Debate Commands ──

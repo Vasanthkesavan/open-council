@@ -146,6 +146,7 @@ async fn call_agent_with_retry(
     model: &str,
     ollama_url: &str,
     agent: Agent,
+    system_prompt: &str,
     user_prompt: &str,
     max_retries: u32,
     app_handle: &tauri::AppHandle,
@@ -160,7 +161,7 @@ async fn call_agent_with_retry(
             api_key,
             model,
             ollama_url,
-            agent.system_prompt(),
+            system_prompt,
             user_prompt,
             app_handle,
             decision_id,
@@ -193,6 +194,7 @@ async fn run_sequential_round(
     app_handle: &tauri::AppHandle,
     decision_id: &str,
     cancel_flag: &Arc<AtomicBool>,
+    app_data_dir: &std::path::PathBuf,
 ) -> Result<Vec<crate::db::DebateRound>, String> {
     if cancel_flag.load(Ordering::Relaxed) {
         return Err("Debate cancelled".to_string());
@@ -215,9 +217,10 @@ async fn run_sequential_round(
             return Err("Debate cancelled".to_string());
         }
 
+        let system_prompt = agent.load_prompt(app_data_dir);
         let result = call_agent_with_retry(
             provider, api_key, model, ollama_url,
-            *agent, &user_prompt, 2,
+            *agent, &system_prompt, &user_prompt, 2,
             app_handle, decision_id, round_number, exchange_number,
         ).await;
 
@@ -293,8 +296,8 @@ pub async fn run_debate(
     // 3. Emit debate-started
     let _ = app_handle.emit("debate-started", json!({ "decision_id": decision_id }));
 
-    // Load LLM config
-    let (provider, api_key, model, ollama_url) = {
+    // Load LLM config and app_data_dir
+    let (provider, api_key, model, ollama_url, app_data_dir) = {
         let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
         let state_guard = state.lock().map_err(|e| e.to_string())?;
         let config = config::load_config(&state_guard.app_data_dir);
@@ -302,8 +305,11 @@ pub async fn run_debate(
             Provider::Anthropic => config.model.clone(),
             Provider::Ollama => config.ollama_model.clone(),
         };
-        (config.provider, config.api_key, active_model, config.ollama_url)
+        (config.provider, config.api_key, active_model, config.ollama_url, state_guard.app_data_dir.clone())
     };
+
+    // Ensure agent prompt files exist
+    agents::init_agent_files(&app_data_dir).ok();
 
     let mut all_rounds: Vec<crate::db::DebateRound> = Vec::new();
 
@@ -311,7 +317,7 @@ pub async fn run_debate(
     let round1 = run_sequential_round(
         &provider, &api_key, &model, &ollama_url,
         &brief, &all_rounds, 1, 1,
-        &app_handle, &decision_id, &cancel_flag,
+        &app_handle, &decision_id, &cancel_flag, &app_data_dir,
     ).await?;
     all_rounds.extend(round1);
 
@@ -325,7 +331,7 @@ pub async fn run_debate(
         let r2e1 = run_sequential_round(
             &provider, &api_key, &model, &ollama_url,
             &brief, &all_rounds, 2, 1,
-            &app_handle, &decision_id, &cancel_flag,
+            &app_handle, &decision_id, &cancel_flag, &app_data_dir,
         ).await?;
         all_rounds.extend(r2e1);
 
@@ -336,7 +342,7 @@ pub async fn run_debate(
         let r2e2 = run_sequential_round(
             &provider, &api_key, &model, &ollama_url,
             &brief, &all_rounds, 2, 2,
-            &app_handle, &decision_id, &cancel_flag,
+            &app_handle, &decision_id, &cancel_flag, &app_data_dir,
         ).await?;
         all_rounds.extend(r2e2);
 
@@ -347,7 +353,7 @@ pub async fn run_debate(
         let round3 = run_sequential_round(
             &provider, &api_key, &model, &ollama_url,
             &brief, &all_rounds, 3, 1,
-            &app_handle, &decision_id, &cancel_flag,
+            &app_handle, &decision_id, &cancel_flag, &app_data_dir,
         ).await?;
         all_rounds.extend(round3);
     }
@@ -359,10 +365,11 @@ pub async fn run_debate(
 
     let transcript = format_transcript(&all_rounds);
     let moderator_user_prompt = agents::moderator_prompt(&brief, &transcript);
+    let moderator_system_prompt = Agent::Moderator.load_prompt(&app_data_dir);
 
     let moderator_response = call_agent_with_retry(
         &provider, &api_key, &model, &ollama_url,
-        Agent::Moderator, &moderator_user_prompt, 2,
+        Agent::Moderator, &moderator_system_prompt, &moderator_user_prompt, 2,
         &app_handle, &decision_id, 99, 1,
     ).await?;
 

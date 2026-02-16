@@ -17,7 +17,7 @@ interface ProfileFileInfo {
 interface ProfileFileContentProps {
   file: ProfileFileInfo;
   onSave: (filename: string, content: string) => Promise<void>;
-  onDelete: (filename: string) => void;
+  onDelete?: (filename: string) => void;
 }
 
 export default function ProfileFileContent({
@@ -91,15 +91,17 @@ export default function ProfileFileContent({
               >
                 <Pencil className="h-4 w-4" />
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => onDelete(file.filename)}
-                className="h-8 w-8 text-destructive hover:text-destructive"
-                title="Delete"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              {onDelete && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => onDelete(file.filename)}
+                  className="h-8 w-8 text-destructive hover:text-destructive"
+                  title="Delete"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
             </>
           )}
         </div>

@@ -1,5 +1,100 @@
 /// Committee debate agent definitions — personas, system prompts, and round templates.
 
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentFileInfo {
+    pub filename: String,
+    pub content: String,
+    pub modified_at: String,
+    pub size_bytes: u64,
+}
+
+pub fn get_agents_dir(app_data_dir: &PathBuf) -> PathBuf {
+    app_data_dir.join("agents")
+}
+
+/// Ensure all agent prompt files exist on disk, writing defaults for any missing ones.
+pub fn init_agent_files(app_data_dir: &PathBuf) -> Result<(), String> {
+    let dir = get_agents_dir(app_data_dir);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let agents = [
+        ("rationalist.md", RATIONALIST_PROMPT),
+        ("advocate.md", ADVOCATE_PROMPT),
+        ("contrarian.md", CONTRARIAN_PROMPT),
+        ("visionary.md", VISIONARY_PROMPT),
+        ("pragmatist.md", PRAGMATIST_PROMPT),
+        ("moderator.md", MODERATOR_PROMPT),
+    ];
+
+    for (filename, default_content) in &agents {
+        let path = dir.join(filename);
+        if !path.exists() {
+            fs::write(&path, default_content).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Read a single agent's prompt from file, falling back to the hardcoded default.
+pub fn read_agent_prompt(app_data_dir: &PathBuf, agent: &Agent) -> String {
+    let dir = get_agents_dir(app_data_dir);
+    let filename = format!("{}.md", agent.key());
+    let path = dir.join(&filename);
+    fs::read_to_string(&path).unwrap_or_else(|_| agent.default_prompt().to_string())
+}
+
+/// Read all agent prompt files with metadata.
+pub fn read_all_agent_files(app_data_dir: &PathBuf) -> Result<Vec<AgentFileInfo>, String> {
+    let dir = get_agents_dir(app_data_dir);
+    init_agent_files(app_data_dir)?;
+
+    let mut files = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+            let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+            let modified = metadata.modified().map_err(|e| e.to_string())?;
+            let modified_at = chrono::DateTime::<chrono::Utc>::from(modified)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            files.push(AgentFileInfo {
+                filename,
+                content,
+                modified_at,
+                size_bytes: metadata.len(),
+            });
+        }
+    }
+    // Sort in a fixed order matching the agent list
+    let order = ["rationalist", "advocate", "contrarian", "visionary", "pragmatist", "moderator"];
+    files.sort_by(|a, b| {
+        let a_key = a.filename.trim_end_matches(".md");
+        let b_key = b.filename.trim_end_matches(".md");
+        let a_idx = order.iter().position(|&x| x == a_key).unwrap_or(99);
+        let b_idx = order.iter().position(|&x| x == b_key).unwrap_or(99);
+        a_idx.cmp(&b_idx)
+    });
+    Ok(files)
+}
+
+/// Write an agent prompt file.
+pub fn write_agent_file(app_data_dir: &PathBuf, filename: &str, content: &str) -> Result<(), String> {
+    let dir = get_agents_dir(app_data_dir);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(filename);
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Agent {
     Rationalist,
@@ -54,7 +149,7 @@ impl Agent {
         }
     }
 
-    pub fn system_prompt(&self) -> &'static str {
+    pub fn default_prompt(&self) -> &'static str {
         match self {
             Agent::Rationalist => RATIONALIST_PROMPT,
             Agent::Advocate => ADVOCATE_PROMPT,
@@ -63,6 +158,11 @@ impl Agent {
             Agent::Pragmatist => PRAGMATIST_PROMPT,
             Agent::Moderator => MODERATOR_PROMPT,
         }
+    }
+
+    /// Load prompt from file, falling back to default.
+    pub fn load_prompt(&self, app_data_dir: &PathBuf) -> String {
+        read_agent_prompt(app_data_dir, self)
     }
 }
 

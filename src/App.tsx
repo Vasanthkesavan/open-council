@@ -15,6 +15,7 @@ import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import DecisionView from "./components/DecisionView";
 import ProfileView from "./components/ProfileView";
+import CommitteeView from "./components/CommitteeView";
 import Settings from "./components/Settings";
 import "./App.css";
 
@@ -35,7 +36,7 @@ interface CreateDecisionResponse {
 type Theme = "light" | "dark";
 const THEME_STORAGE_KEY = "decision-copilot-theme";
 
-type ViewMode = "chat" | "decision" | "profile";
+type ViewMode = "chat" | "decision" | "profile" | "committee";
 
 function getInitialTheme(): Theme {
   if (typeof window === "undefined") {
@@ -120,6 +121,10 @@ function App() {
     setViewMode("profile");
   }
 
+  function handleOpenCommittee() {
+    setViewMode("committee");
+  }
+
   async function handleCreateDecision() {
     const title = newDecisionTitle.trim();
     if (!title) return;
@@ -175,6 +180,7 @@ function App() {
           onNewDecision={handleNewDecision}
           onOpenSettings={() => setShowSettings(true)}
           onOpenProfile={handleOpenProfile}
+          onOpenCommittee={handleOpenCommittee}
           onToggleTheme={handleToggleTheme}
           onClose={() => setSidebarOpen(false)}
           theme={theme}
@@ -194,6 +200,8 @@ function App() {
         )}
         {viewMode === "profile" ? (
           <ProfileView onNavigateToChat={handleNewChat} />
+        ) : viewMode === "committee" ? (
+          <CommitteeView onNavigateToChat={handleNewChat} />
         ) : viewMode === "decision" && currentConversationId && currentDecisionId ? (
           <DecisionView
             conversationId={currentConversationId}

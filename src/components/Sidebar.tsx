@@ -47,6 +47,7 @@ interface SidebarProps {
   onNewDecision: () => void;
   onOpenSettings: () => void;
   onOpenProfile: () => void;
+  onOpenCommittee: () => void;
   onToggleTheme: () => void;
   onClose: () => void;
   theme: "light" | "dark";
@@ -73,6 +74,7 @@ export default function Sidebar({
   onNewDecision,
   onOpenSettings,
   onOpenProfile,
+  onOpenCommittee,
   onToggleTheme,
   onClose,
   theme,
@@ -289,6 +291,14 @@ export default function Sidebar({
         >
           <User className="h-4 w-4" />
           Profile
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={onOpenCommittee}
+          className="w-full justify-start gap-2 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+        >
+          <MessagesSquare className="h-4 w-4" />
+          Committee
         </Button>
         <Button
           variant="ghost"

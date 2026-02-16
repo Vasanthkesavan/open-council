@@ -31,7 +31,7 @@ interface CreateDecisionResponse {
 }
 
 type Theme = "light" | "dark";
-const THEME_STORAGE_KEY = "decision-copilot-theme";
+const THEME_STORAGE_KEY = "open-council-theme";
 
 type ViewMode = "chat" | "decision" | "profile" | "committee";
 

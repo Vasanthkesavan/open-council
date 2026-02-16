@@ -80,7 +80,7 @@ describe("ChatView", () => {
       />,
     );
 
-    const textbox = screen.getByPlaceholderText("Message Decision Copilot...");
+    const textbox = screen.getByPlaceholderText("Message Open Council...");
     await user.type(textbox, "Should I relocate?");
     await user.keyboard("{Enter}");
 

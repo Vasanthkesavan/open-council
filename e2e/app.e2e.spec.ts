@@ -104,7 +104,7 @@ test("e2e_chat_roundtrip_with_mock_tauri_backend", async ({ page }) => {
   await expect(page.getByRole("button", { name: "New Chat" })).toBeVisible();
   await expect(page.getByRole("button", { name: "New Decision" })).toBeVisible();
 
-  const input = page.getByPlaceholder("Message Decision Copilot...");
+  const input = page.getByPlaceholder("Message Open Council...");
   await input.fill("Should I accept this job offer?");
   await input.press("Enter");
 

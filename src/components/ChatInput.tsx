@@ -46,7 +46,7 @@ export default function ChatInput({ onSend, disabled }: ChatInputProps) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message Decision Copilot..."
+            placeholder="Message Open Council..."
             disabled={disabled}
             rows={1}
             className="w-full bg-transparent px-4 pt-3.5 pb-12 text-sm text-foreground placeholder:text-muted-foreground/60 resize-none focus:outline-none disabled:opacity-50"

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    decision_copilot_lib::run()
+    open_council_lib::run()
 }

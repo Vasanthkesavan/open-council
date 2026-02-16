@@ -112,7 +112,7 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "New Chat" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New Decision" })).toBeInTheDocument();
 
-    const textbox = screen.getByPlaceholderText("Message Decision Copilot...");
+    const textbox = screen.getByPlaceholderText("Message Open Council...");
     await user.type(textbox, "I need help deciding where to move");
     await user.keyboard("{Enter}");
 

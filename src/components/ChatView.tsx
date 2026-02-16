@@ -153,7 +153,7 @@ export default function ChatView({
                 <Bot className="h-6 w-6 text-foreground/70" />
               </div>
               <h2 className="text-xl font-semibold text-foreground/80 mb-2">
-                Decision Copilot
+                Open Council
               </h2>
               <p className="text-muted-foreground text-sm leading-relaxed">
                 Start a conversation to help me learn about you — your values,

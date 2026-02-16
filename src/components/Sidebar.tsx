@@ -147,7 +147,7 @@ export default function Sidebar({
   return (
     <div className="w-[280px] bg-sidebar border-r border-sidebar-border flex flex-col h-full shrink-0">
       <div className="p-3 flex items-center justify-between border-b border-sidebar-border">
-        <h1 className="text-sm font-semibold text-sidebar-foreground">Decision Copilot</h1>
+        <h1 className="text-sm font-semibold text-sidebar-foreground">Open Council</h1>
         <Button
           variant="ghost"
           size="icon"

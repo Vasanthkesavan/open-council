@@ -299,8 +299,8 @@ fn execute_tool(
 fn openrouter_headers(api_key: &str) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Authorization", format!("Bearer {}", api_key).parse().unwrap());
-    headers.insert("HTTP-Referer", "https://decisioncopilot.app".parse().unwrap());
-    headers.insert("X-Title", "Decision Copilot".parse().unwrap());
+    headers.insert("HTTP-Referer", "https://opencouncil.app".parse().unwrap());
+    headers.insert("X-Title", "Open Council".parse().unwrap());
     headers.insert("Content-Type", "application/json".parse().unwrap());
     headers
 }

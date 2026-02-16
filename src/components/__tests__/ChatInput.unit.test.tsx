@@ -11,7 +11,7 @@ describe("ChatInput", () => {
 
     render(<ChatInput onSend={onSend} disabled={false} />);
 
-    const textbox = screen.getByPlaceholderText("Message Decision Copilot...");
+    const textbox = screen.getByPlaceholderText("Message Open Council...");
     const sendButton = screen.getByRole("button");
 
     await user.type(textbox, "   hello world   ");
@@ -28,7 +28,7 @@ describe("ChatInput", () => {
 
     render(<ChatInput onSend={onSend} disabled={false} />);
 
-    const textbox = screen.getByPlaceholderText("Message Decision Copilot...");
+    const textbox = screen.getByPlaceholderText("Message Open Council...");
 
     await user.type(textbox, "line one");
     await user.keyboard("{Shift>}{Enter}{/Shift}");
@@ -45,7 +45,7 @@ describe("ChatInput", () => {
 
     render(<ChatInput onSend={onSend} disabled />);
 
-    const textbox = screen.getByPlaceholderText("Message Decision Copilot...");
+    const textbox = screen.getByPlaceholderText("Message Open Council...");
     await user.type(textbox, "hello");
     await user.keyboard("{Enter}");
 

@@ -1,6 +1,6 @@
-# Decision Copilot
+# Open Council
 
-Decision Copilot is a Tauri desktop app for personal decision support. It combines:
+Open Council is a Tauri desktop app for personal decision support. It combines:
 - long-running chat memory about the user (local markdown profile files),
 - structured decision analysis (options, variables, recommendation),
 - a multi-agent committee debate that stress-tests a decision from different viewpoints.
@@ -80,7 +80,7 @@ Decisions move through these statuses:
 The app uses Tauri `app_data_dir`.
 On Windows this is typically:
 
-`%APPDATA%\com.decisioncopilot.app\`
+`%APPDATA%\com.opencouncil.app\`
 
 Key files/folders:
 - `database.sqlite`

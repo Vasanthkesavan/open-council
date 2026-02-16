@@ -106,7 +106,7 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
           </DialogTitle>
           {mustSetKey && (
             <DialogDescription>
-              Decision Copilot uses OpenRouter to access AI models. Enter your
+              Open Council uses OpenRouter to access AI models. Enter your
               API key to get started.
             </DialogDescription>
           )}

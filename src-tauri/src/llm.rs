@@ -1,14 +1,15 @@
 use crate::commands::AppState;
-use crate::config::Provider;
 use crate::decisions;
 use crate::profile;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager};
+
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 
 const SYSTEM_PROMPT: &str = r#"You are a personal decision-making assistant. Your primary job right now is to deeply understand the user — who they are, what they value, what their life situation looks like, and what matters most to them.
 
@@ -94,130 +95,9 @@ pub enum StreamEvent {
     ToolUse { tool: String },
 }
 
-// ── Anthropic tool format ──
+// ── OpenAI-compatible tool format (used by OpenRouter) ──
 
-fn get_anthropic_tools(is_decision: bool) -> Value {
-    let mut tools = json!([
-        {
-            "name": "read_profile_files",
-            "description": "Read the list of all profile files and their contents. Call this at the start of conversations to refresh your memory about the user.",
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        },
-        {
-            "name": "write_profile_file",
-            "description": "Create or update a profile file with information learned about the user. Use descriptive filenames like 'career.md', 'values.md', 'family.md', etc.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "The filename (e.g., 'career.md')"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The full markdown content of the file"
-                    }
-                },
-                "required": ["filename", "content"]
-            }
-        },
-        {
-            "name": "delete_profile_file",
-            "description": "Delete a profile file that is no longer relevant or has been consolidated into another file.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "The filename to delete"
-                    }
-                },
-                "required": ["filename"]
-            }
-        }
-    ]);
-
-    if is_decision {
-        if let Some(arr) = tools.as_array_mut() {
-            arr.push(json!({
-                "name": "update_decision_summary",
-                "description": "Update the structured decision summary panel. Call this after each significant exchange to keep the summary current. You can update any combination of fields. Arrays are merged by key — new items are appended, existing items (matched by label/option) are updated.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "options": {
-                            "type": "array",
-                            "description": "The options being considered",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "label": { "type": "string" },
-                                    "description": { "type": "string" }
-                                },
-                                "required": ["label"]
-                            }
-                        },
-                        "variables": {
-                            "type": "array",
-                            "description": "Key variables/factors at play",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "label": { "type": "string" },
-                                    "value": { "type": "string" },
-                                    "impact": { "type": "string", "enum": ["high", "medium", "low"] }
-                                },
-                                "required": ["label", "value"]
-                            }
-                        },
-                        "pros_cons": {
-                            "type": "array",
-                            "description": "Pros and cons per option, weighted by user's values",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "option": { "type": "string" },
-                                    "pros": { "type": "array", "items": { "type": "string" } },
-                                    "cons": { "type": "array", "items": { "type": "string" } },
-                                    "alignment_score": { "type": "integer", "minimum": 1, "maximum": 10 },
-                                    "alignment_reasoning": { "type": "string" }
-                                },
-                                "required": ["option"]
-                            }
-                        },
-                        "recommendation": {
-                            "type": "object",
-                            "description": "The AI's final recommendation",
-                            "properties": {
-                                "choice": { "type": "string" },
-                                "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
-                                "reasoning": { "type": "string" },
-                                "tradeoffs": { "type": "string" },
-                                "next_steps": { "type": "array", "items": { "type": "string" } }
-                            },
-                            "required": ["choice", "confidence", "reasoning"]
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": "Update the decision status",
-                            "enum": ["exploring", "analyzing", "recommended"]
-                        }
-                    }
-                }
-            }));
-        }
-    }
-
-    tools
-}
-
-// ── Ollama/OpenAI tool format ──
-
-fn get_ollama_tools(is_decision: bool) -> Value {
+fn get_tools(is_decision: bool) -> Value {
     let mut tools = json!([
         {
             "type": "function",
@@ -343,19 +223,6 @@ fn get_ollama_tools(is_decision: bool) -> Value {
     tools
 }
 
-// ── Ollama response types (used for tool-call parsing) ──
-
-#[derive(Debug, Serialize, Deserialize)]
-struct OllamaToolCall {
-    function: OllamaFunctionCall,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct OllamaFunctionCall {
-    name: String,
-    arguments: Value,
-}
-
 // ── Shared tool execution ──
 
 fn execute_tool(
@@ -391,7 +258,6 @@ fn execute_tool(
             let Some(dec_id) = decision_id else {
                 return "Error: no decision context for update_decision_summary".to_string();
             };
-            // Get current summary from DB, merge, save back
             let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
             let state_guard = match state.lock() {
                 Ok(s) => s,
@@ -410,14 +276,12 @@ fn execute_tool(
                 return format!("Error saving summary: {}", e);
             }
 
-            // Update status if provided
             if let Some(status) = input.get("status").and_then(|v| v.as_str()) {
                 if let Err(e) = state_guard.db.update_decision_status(dec_id, status) {
                     return format!("Error updating status: {}", e);
                 }
             }
 
-            // Emit event to frontend
             let _ = app_handle.emit("decision-summary-updated", json!({
                 "decision_id": dec_id,
                 "summary": merged,
@@ -430,29 +294,44 @@ fn execute_tool(
     }
 }
 
-// ── Public entry point ──
+// ── Helpers ──
 
-pub async fn send_message(
-    provider: &Provider,
-    api_key: &str,
-    model: &str,
-    ollama_url: &str,
-    messages: Vec<Value>,
-    app_data_dir: &PathBuf,
-    on_event: &Channel<StreamEvent>,
-    conv_type: &str,
-    decision_id: Option<&str>,
-    app_handle: &tauri::AppHandle,
-) -> Result<String, String> {
-    match provider {
-        Provider::Anthropic => send_to_anthropic(api_key, model, messages, app_data_dir, on_event, conv_type, decision_id, app_handle).await,
-        Provider::Ollama => send_to_ollama(ollama_url, model, messages, app_data_dir, on_event, conv_type, decision_id, app_handle).await,
+fn openrouter_headers(api_key: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Authorization", format!("Bearer {}", api_key).parse().unwrap());
+    headers.insert("HTTP-Referer", "https://decisioncopilot.app".parse().unwrap());
+    headers.insert("X-Title", "Decision Copilot".parse().unwrap());
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    headers
+}
+
+fn map_api_error(status: reqwest::StatusCode, body: &str) -> String {
+    match status.as_u16() {
+        401 => "Invalid API key. Check your key at openrouter.ai/keys".to_string(),
+        402 => "Insufficient credits. Visit openrouter.ai to add funds.".to_string(),
+        429 => "Rate limited. Please wait a moment and try again.".to_string(),
+        400 if body.contains("model_not_found") || body.contains("not found") => {
+            "Model not found. Check the model ID at openrouter.ai/models".to_string()
+        }
+        500 | 502 | 503 => "OpenRouter is temporarily unavailable. Try again in a moment.".to_string(),
+        _ => format!("API error ({}): {}", status, body),
     }
 }
 
-// ── Anthropic streaming implementation ──
+// ── Streaming tool call accumulator ──
+// OpenAI streaming sends tool_calls incrementally: first chunk has id+name,
+// subsequent chunks append to arguments string.
 
-async fn send_to_anthropic(
+#[derive(Debug, Clone)]
+struct PendingToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+// ── Public entry point: send_message ──
+
+pub async fn send_message(
     api_key: &str,
     model: &str,
     messages: Vec<Value>,
@@ -463,26 +342,32 @@ async fn send_to_anthropic(
     app_handle: &tauri::AppHandle,
 ) -> Result<String, String> {
     let client = Client::new();
-    let mut current_messages = messages;
-    let mut all_text = String::new();
     let is_decision = conv_type == "decision";
     let system_prompt = if is_decision { DECISION_SYSTEM_PROMPT } else { SYSTEM_PROMPT };
+
+    // Build message list with system prompt as first message
+    let mut openrouter_messages: Vec<Value> = vec![
+        json!({"role": "system", "content": system_prompt}),
+    ];
+    for msg in &messages {
+        openrouter_messages.push(msg.clone());
+    }
+
+    let mut all_text = String::new();
 
     loop {
         let request_body = json!({
             "model": model,
+            "messages": openrouter_messages,
+            "tools": get_tools(is_decision),
+            "temperature": 0.7,
             "max_tokens": 4096,
-            "system": system_prompt,
-            "tools": get_anthropic_tools(is_decision),
-            "messages": current_messages,
             "stream": true,
         });
 
         let mut response = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .post(OPENROUTER_URL)
+            .headers(openrouter_headers(api_key))
             .json(&request_body)
             .send()
             .await
@@ -491,148 +376,132 @@ async fn send_to_anthropic(
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.map_err(|e| format!("Read error: {}", e))?;
-            return Err(format!("API error ({}): {}", status, error_text));
+            return Err(map_api_error(status, &error_text));
         }
 
         let mut iteration_text = String::new();
-        let mut tool_uses: Vec<(String, String, Value)> = Vec::new(); // (id, name, input)
-        let mut current_tool_id = String::new();
-        let mut current_tool_name = String::new();
-        let mut current_tool_input_json = String::new();
-        let mut in_tool_use = false;
+        let mut pending_tool_calls: Vec<PendingToolCall> = Vec::new();
         let mut buffer = String::new();
 
         while let Some(chunk) = response.chunk().await.map_err(|e| format!("Stream error: {}", e))? {
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            // Process complete SSE events (separated by \n\n)
-            while let Some(pos) = buffer.find("\n\n") {
-                let event_block = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
+            // Process complete SSE lines (data: {...}\n\n)
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim_end().to_string();
+                buffer = buffer[pos + 1..].to_string();
 
-                let mut event_type = String::new();
-                let mut event_data = String::new();
-
-                for line in event_block.lines() {
-                    if let Some(t) = line.strip_prefix("event: ") {
-                        event_type = t.to_string();
-                    } else if let Some(d) = line.strip_prefix("data: ") {
-                        event_data = d.to_string();
-                    }
-                }
-
-                if event_data.is_empty() {
+                if line.is_empty() {
                     continue;
                 }
 
-                let data: Value = match serde_json::from_str(&event_data) {
+                let data_str = match line.strip_prefix("data: ") {
+                    Some(d) => d,
+                    None => continue,
+                };
+
+                if data_str == "[DONE]" {
+                    continue;
+                }
+
+                let data: Value = match serde_json::from_str(data_str) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
 
-                match event_type.as_str() {
-                    "content_block_start" => {
-                        if data["content_block"]["type"].as_str() == Some("tool_use") {
-                            in_tool_use = true;
-                            current_tool_id = data["content_block"]["id"].as_str().unwrap_or("").to_string();
-                            current_tool_name = data["content_block"]["name"].as_str().unwrap_or("").to_string();
-                            current_tool_input_json.clear();
-                            let _ = on_event.send(StreamEvent::ToolUse { tool: current_tool_name.clone() });
+                let choice = &data["choices"][0];
+                let delta = &choice["delta"];
+
+                // Text content
+                if let Some(content) = delta["content"].as_str() {
+                    if !content.is_empty() {
+                        iteration_text.push_str(content);
+                        let _ = on_event.send(StreamEvent::Token { token: content.to_string() });
+                    }
+                }
+
+                // Tool calls (streamed incrementally)
+                if let Some(tool_calls) = delta["tool_calls"].as_array() {
+                    for tc in tool_calls {
+                        let index = tc["index"].as_u64().unwrap_or(0) as usize;
+
+                        // Ensure we have enough slots
+                        while pending_tool_calls.len() <= index {
+                            pending_tool_calls.push(PendingToolCall {
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                        }
+
+                        // First chunk for this tool call has id and function name
+                        if let Some(id) = tc["id"].as_str() {
+                            pending_tool_calls[index].id = id.to_string();
+                        }
+                        if let Some(name) = tc["function"]["name"].as_str() {
+                            pending_tool_calls[index].name = name.to_string();
+                            let _ = on_event.send(StreamEvent::ToolUse { tool: name.to_string() });
+                        }
+                        // Subsequent chunks append to arguments
+                        if let Some(args) = tc["function"]["arguments"].as_str() {
+                            pending_tool_calls[index].arguments.push_str(args);
                         }
                     }
-                    "content_block_delta" => {
-                        if let Some(delta_type) = data["delta"]["type"].as_str() {
-                            match delta_type {
-                                "text_delta" => {
-                                    if let Some(text) = data["delta"]["text"].as_str() {
-                                        if !text.is_empty() {
-                                            iteration_text.push_str(text);
-                                            let _ = on_event.send(StreamEvent::Token { token: text.to_string() });
-                                        }
-                                    }
-                                }
-                                "input_json_delta" => {
-                                    if let Some(partial) = data["delta"]["partial_json"].as_str() {
-                                        current_tool_input_json.push_str(partial);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    "content_block_stop" => {
-                        if in_tool_use {
-                            let input: Value = serde_json::from_str(&current_tool_input_json).unwrap_or(json!({}));
-                            tool_uses.push((current_tool_id.clone(), current_tool_name.clone(), input));
-                            in_tool_use = false;
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
 
-        if tool_uses.is_empty() {
+        // Filter out empty tool calls (shouldn't happen, but defensive)
+        let tool_calls: Vec<PendingToolCall> = pending_tool_calls
+            .into_iter()
+            .filter(|tc| !tc.name.is_empty())
+            .collect();
+
+        if tool_calls.is_empty() {
             all_text.push_str(&iteration_text);
             return Ok(all_text);
         }
 
-        // Handle tool use — build assistant message and tool results
-        let mut assistant_content = Vec::new();
-        if !iteration_text.is_empty() {
-            assistant_content.push(json!({"type": "text", "text": iteration_text}));
-            all_text.push_str(&iteration_text);
-        }
-        let mut tool_results = Vec::new();
+        // Handle tool calls — build assistant message and tool results
+        all_text.push_str(&iteration_text);
 
-        for (id, name, input) in &tool_uses {
-            assistant_content.push(json!({
-                "type": "tool_use",
-                "id": id,
-                "name": name,
-                "input": input,
-            }));
-            let result = execute_tool(name, input, app_data_dir, decision_id, app_handle);
-            tool_results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": id,
+        // Build the assistant message with tool_calls
+        let assistant_tool_calls: Vec<Value> = tool_calls.iter().map(|tc| {
+            json!({
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                }
+            })
+        }).collect();
+
+        let mut assistant_msg = json!({"role": "assistant"});
+        if !iteration_text.is_empty() {
+            assistant_msg["content"] = json!(iteration_text);
+        } else {
+            assistant_msg["content"] = Value::Null;
+        }
+        assistant_msg["tool_calls"] = json!(assistant_tool_calls);
+        openrouter_messages.push(assistant_msg);
+
+        // Execute each tool and append results
+        for tc in &tool_calls {
+            let input: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+            let result = execute_tool(&tc.name, &input, app_data_dir, decision_id, app_handle);
+            openrouter_messages.push(json!({
+                "role": "tool",
+                "tool_call_id": tc.id,
                 "content": result,
             }));
         }
-
-        current_messages.push(json!({"role": "assistant", "content": assistant_content}));
-        current_messages.push(json!({"role": "user", "content": tool_results}));
     }
 }
 
-// ── Streaming LLM call for debate (emits per-token events) ──
+// ── Streaming LLM call for debate (no tools, emits per-token events) ──
 
 pub async fn call_llm_streaming_debate(
-    provider: &Provider,
-    api_key: &str,
-    model: &str,
-    ollama_url: &str,
-    system_prompt: &str,
-    user_prompt: &str,
-    app_handle: &tauri::AppHandle,
-    decision_id: &str,
-    round_number: i32,
-    exchange_number: i32,
-    agent_key: &str,
-) -> Result<String, String> {
-    match provider {
-        Provider::Anthropic => stream_anthropic_debate(
-            api_key, model, system_prompt, user_prompt,
-            app_handle, decision_id, round_number, exchange_number, agent_key,
-        ).await,
-        Provider::Ollama => stream_ollama_debate(
-            ollama_url, model, system_prompt, user_prompt,
-            app_handle, decision_id, round_number, exchange_number, agent_key,
-        ).await,
-    }
-}
-
-async fn stream_anthropic_debate(
     api_key: &str,
     model: &str,
     system_prompt: &str,
@@ -646,17 +515,18 @@ async fn stream_anthropic_debate(
     let client = Client::new();
     let request_body = json!({
         "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
         "max_tokens": 2048,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_prompt}],
         "stream": true,
     });
 
     let mut response = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
+        .post(OPENROUTER_URL)
+        .headers(openrouter_headers(api_key))
         .json(&request_body)
         .send()
         .await
@@ -665,86 +535,7 @@ async fn stream_anthropic_debate(
     let status = response.status();
     if !status.is_success() {
         let error_text = response.text().await.map_err(|e| format!("Read error: {}", e))?;
-        return Err(format!("API error ({}): {}", status, error_text));
-    }
-
-    let mut all_text = String::new();
-    let mut buffer = String::new();
-
-    while let Some(chunk) = response.chunk().await.map_err(|e| format!("Stream error: {}", e))? {
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-        while let Some(pos) = buffer.find("\n\n") {
-            let event_block = buffer[..pos].to_string();
-            buffer = buffer[pos + 2..].to_string();
-
-            let mut event_data = String::new();
-            for line in event_block.lines() {
-                if let Some(d) = line.strip_prefix("data: ") {
-                    event_data = d.to_string();
-                }
-            }
-            if event_data.is_empty() { continue; }
-
-            let data: Value = match serde_json::from_str(&event_data) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            if data["delta"]["type"].as_str() == Some("text_delta") {
-                if let Some(text) = data["delta"]["text"].as_str() {
-                    if !text.is_empty() {
-                        all_text.push_str(text);
-                        let _ = app_handle.emit("debate-agent-token", json!({
-                            "decision_id": decision_id,
-                            "round_number": round_number,
-                            "exchange_number": exchange_number,
-                            "agent": agent_key,
-                            "token": text,
-                        }));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(all_text)
-}
-
-async fn stream_ollama_debate(
-    ollama_url: &str,
-    model: &str,
-    system_prompt: &str,
-    user_prompt: &str,
-    app_handle: &tauri::AppHandle,
-    decision_id: &str,
-    round_number: i32,
-    exchange_number: i32,
-    agent_key: &str,
-) -> Result<String, String> {
-    let client = Client::new();
-    let url = format!("{}/api/chat", ollama_url.trim_end_matches('/'));
-    let request_body = json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "stream": true,
-    });
-
-    let mut response = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("Ollama connection error: {}. Is Ollama running at {}?", e, ollama_url))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.map_err(|e| format!("Read error: {}", e))?;
-        return Err(format!("Ollama error ({}): {}", status, error_text));
+        return Err(map_api_error(status, &error_text));
     }
 
     let mut all_text = String::new();
@@ -754,17 +545,28 @@ async fn stream_ollama_debate(
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim().to_string();
+            let line = buffer[..pos].trim_end().to_string();
             buffer = buffer[pos + 1..].to_string();
 
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
-            let data: Value = match serde_json::from_str(&line) {
+            let data_str = match line.strip_prefix("data: ") {
+                Some(d) => d,
+                None => continue,
+            };
+
+            if data_str == "[DONE]" {
+                continue;
+            }
+
+            let data: Value = match serde_json::from_str(data_str) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
 
-            if let Some(content) = data["message"]["content"].as_str() {
+            if let Some(content) = data["choices"][0]["delta"]["content"].as_str() {
                 if !content.is_empty() {
                     all_text.push_str(content);
                     let _ = app_handle.emit("debate-agent-token", json!({
@@ -780,128 +582,4 @@ async fn stream_ollama_debate(
     }
 
     Ok(all_text)
-}
-
-// ── Ollama streaming implementation ──
-
-async fn send_to_ollama(
-    ollama_url: &str,
-    model: &str,
-    messages: Vec<Value>,
-    app_data_dir: &PathBuf,
-    on_event: &Channel<StreamEvent>,
-    conv_type: &str,
-    decision_id: Option<&str>,
-    app_handle: &tauri::AppHandle,
-) -> Result<String, String> {
-    let client = Client::new();
-    let url = format!("{}/api/chat", ollama_url.trim_end_matches('/'));
-    let is_decision = conv_type == "decision";
-    let system_prompt = if is_decision { DECISION_SYSTEM_PROMPT } else { SYSTEM_PROMPT };
-
-    let mut ollama_messages: Vec<Value> = vec![
-        json!({"role": "system", "content": system_prompt}),
-    ];
-    for msg in &messages {
-        ollama_messages.push(msg.clone());
-    }
-
-    let mut all_text = String::new();
-
-    loop {
-        let request_body = json!({
-            "model": model,
-            "messages": ollama_messages,
-            "tools": get_ollama_tools(is_decision),
-            "stream": true,
-        });
-
-        let mut response = client
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| format!("Ollama connection error: {}. Is Ollama running at {}?", e, ollama_url))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.map_err(|e| format!("Read error: {}", e))?;
-            return Err(format!("Ollama error ({}): {}", status, error_text));
-        }
-
-        let mut iteration_text = String::new();
-        let mut tool_calls: Vec<OllamaToolCall> = Vec::new();
-        let mut buffer = String::new();
-
-        while let Some(chunk) = response.chunk().await.map_err(|e| format!("Stream error: {}", e))? {
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-            // Process complete lines (NDJSON)
-            while let Some(pos) = buffer.find('\n') {
-                let line = buffer[..pos].trim().to_string();
-                buffer = buffer[pos + 1..].to_string();
-
-                if line.is_empty() {
-                    continue;
-                }
-
-                let data: Value = match serde_json::from_str(&line) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                // Extract content token
-                if let Some(content) = data["message"]["content"].as_str() {
-                    if !content.is_empty() {
-                        iteration_text.push_str(content);
-                        let _ = on_event.send(StreamEvent::Token { token: content.to_string() });
-                    }
-                }
-
-                // Check for tool calls in the message
-                if let Some(tcs) = data["message"]["tool_calls"].as_array() {
-                    for tc in tcs {
-                        if let Some(name) = tc["function"]["name"].as_str() {
-                            let arguments = tc["function"]["arguments"].clone();
-                            let _ = on_event.send(StreamEvent::ToolUse { tool: name.to_string() });
-                            tool_calls.push(OllamaToolCall {
-                                function: OllamaFunctionCall {
-                                    name: name.to_string(),
-                                    arguments,
-                                },
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        if tool_calls.is_empty() {
-            all_text.push_str(&iteration_text);
-            return Ok(all_text);
-        }
-
-        // Handle tool calls
-        all_text.push_str(&iteration_text);
-
-        ollama_messages.push(json!({
-            "role": "assistant",
-            "content": iteration_text,
-            "tool_calls": tool_calls.iter().map(|tc| json!({
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                }
-            })).collect::<Vec<Value>>(),
-        }));
-
-        for tc in &tool_calls {
-            let result = execute_tool(&tc.function.name, &tc.function.arguments, app_data_dir, decision_id, app_handle);
-            ollama_messages.push(json!({
-                "role": "tool",
-                "content": result,
-            }));
-        }
-    }
 }

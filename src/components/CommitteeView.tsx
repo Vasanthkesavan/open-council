@@ -4,7 +4,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { FolderOpen, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import ProfileFileList from "./ProfileFileList";
+import ModelSelector from "@/components/ModelSelector";
 import ProfileFileContent from "./ProfileFileContent";
 
 interface AgentFileInfo {
@@ -14,24 +14,52 @@ interface AgentFileInfo {
   size_bytes: number;
 }
 
+interface SettingsResponse {
+  api_key_set: boolean;
+  api_key_preview: string;
+  model: string;
+  agent_models: Record<string, string>;
+}
+
 interface CommitteeViewProps {
   onNavigateToChat: () => void;
 }
+
+const AGENT_META: Record<string, { label: string; emoji: string }> = {
+  rationalist: { label: "Rationalist", emoji: "\u{1f9ee}" },
+  advocate: { label: "Advocate", emoji: "\u{1f49c}" },
+  contrarian: { label: "Contrarian", emoji: "\u{1f534}" },
+  visionary: { label: "Visionary", emoji: "\u{1f52d}" },
+  pragmatist: { label: "Pragmatist", emoji: "\u{1f527}" },
+  moderator: { label: "Moderator", emoji: "\u{1f3af}" },
+};
 
 export default function CommitteeView({ onNavigateToChat }: CommitteeViewProps) {
   const [files, setFiles] = useState<AgentFileInfo[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [defaultModel, setDefaultModel] = useState("");
+  const [agentModels, setAgentModels] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadFiles();
+    loadSettings();
   }, []);
+
+  async function loadSettings() {
+    try {
+      const settings = await invoke<SettingsResponse>("get_settings");
+      setDefaultModel(settings.model);
+      setAgentModels(settings.agent_models || {});
+    } catch (err) {
+      console.error("Failed to load settings:", err);
+    }
+  }
 
   async function loadFiles() {
     try {
       const result = await invoke<AgentFileInfo[]>("get_agent_files");
       setFiles(result);
-      // Auto-select first file if none selected
       if (!selectedFile && result.length > 0) {
         setSelectedFile(result[0].filename);
       }
@@ -53,6 +81,23 @@ export default function CommitteeView({ onNavigateToChat }: CommitteeViewProps) 
       await revealItemInDir(path);
     } catch (err) {
       console.error("Failed to open folder:", err);
+    }
+  }
+
+  async function handleSaveAgentModel(agentKey: string, model: string) {
+    try {
+      await invoke("save_agent_model", { agentKey, model: model.trim() });
+      setAgentModels((prev) => {
+        const next = { ...prev };
+        if (model.trim()) {
+          next[agentKey] = model.trim();
+        } else {
+          delete next[agentKey];
+        }
+        return next;
+      });
+    } catch (err) {
+      console.error("Failed to save agent model:", err);
     }
   }
 
@@ -100,14 +145,47 @@ export default function CommitteeView({ onNavigateToChat }: CommitteeViewProps) 
         </div>
       ) : (
         <div className="flex-1 flex min-h-0">
-          {/* Left panel - agent list */}
-          <div className="w-[250px] border-r border-border shrink-0 bg-muted/10">
+          {/* Left panel - agent list with model overrides */}
+          <div className="w-[280px] border-r border-border shrink-0 bg-muted/10">
             <ScrollArea className="h-full">
-              <ProfileFileList
-                files={files}
-                selectedFile={selectedFile}
-                onSelect={setSelectedFile}
-              />
+              <div className="p-2 space-y-1">
+                {files.map((file) => {
+                  const key = file.filename.replace(".md", "");
+                  const meta = AGENT_META[key];
+                  const isSelected = selectedFile === file.filename;
+                  const agentModel = agentModels[key] || "";
+
+                  return (
+                    <div key={file.filename}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFile(file.filename)}
+                        className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                          isSelected
+                            ? "bg-accent text-accent-foreground"
+                            : "hover:bg-muted"
+                        }`}
+                      >
+                        <span className="mr-2">{meta?.emoji || ""}</span>
+                        {meta?.label || key}
+                      </button>
+                      {isSelected && (
+                        <div className="px-3 pb-2 pt-1">
+                          <label className="text-[11px] text-muted-foreground block mb-1">
+                            Model override
+                          </label>
+                          <ModelSelector
+                            value={agentModel}
+                            onChange={(val) => handleSaveAgentModel(key, val)}
+                            placeholder={defaultModel || "Default model"}
+                            compact
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </ScrollArea>
           </div>
 
@@ -130,3 +208,4 @@ export default function CommitteeView({ onNavigateToChat }: CommitteeViewProps) 
     </div>
   );
 }
+

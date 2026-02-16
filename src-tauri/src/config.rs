@@ -1,37 +1,28 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Provider {
-    Anthropic,
-    Ollama,
-}
-
-impl Default for Provider {
-    fn default() -> Self {
-        Self::Anthropic
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
-    pub provider: Provider,
-    pub api_key: String,
+    #[serde(default)]
+    pub openrouter_api_key: String,
+    #[serde(default = "default_model")]
     pub model: String,
-    pub ollama_url: String,
-    pub ollama_model: String,
+    #[serde(default)]
+    pub agent_models: HashMap<String, String>,
+}
+
+fn default_model() -> String {
+    "anthropic/claude-sonnet-4-5".to_string()
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            provider: Provider::Anthropic,
-            api_key: String::new(),
-            model: "claude-sonnet-4-5-20250929".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: "llama3.1:8b".to_string(),
+            openrouter_api_key: String::new(),
+            model: default_model(),
+            agent_models: HashMap::new(),
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::agents;
-use crate::config::{self, AppConfig, Provider};
+use crate::config::{self, AppConfig};
 use crate::db::{Database, DebateRound, Decision};
 use crate::debate;
 use crate::llm;
@@ -30,12 +30,10 @@ pub struct SendMessageResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SettingsResponse {
-    pub provider: String,
     pub api_key_set: bool,
     pub api_key_preview: String,
     pub model: String,
-    pub ollama_url: String,
-    pub ollama_model: String,
+    pub agent_models: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,17 +54,12 @@ pub async fn send_message(
     message: String,
     on_event: Channel<StreamEvent>,
 ) -> Result<SendMessageResponse, String> {
-    let (provider, api_key, model, ollama_url, conv_id, history_messages, conv_type, decision_id) = {
+    let (api_key, model, conv_id, history_messages, conv_type, decision_id) = {
         let state = state.lock().map_err(|e| e.to_string())?;
         let config = config::load_config(&state.app_data_dir);
 
-        match config.provider {
-            Provider::Anthropic => {
-                if config.api_key.is_empty() {
-                    return Err("API key not set. Please go to Settings to add your Anthropic API key.".to_string());
-                }
-            }
-            Provider::Ollama => {}
+        if config.openrouter_api_key.is_empty() {
+            return Err("API key not set. Please go to Settings to add your OpenRouter API key.".to_string());
         }
 
         let conv_id = match conversation_id {
@@ -92,12 +85,6 @@ pub async fn send_message(
             })
         }).collect();
 
-        let active_model = match config.provider {
-            Provider::Anthropic => config.model.clone(),
-            Provider::Ollama => config.ollama_model.clone(),
-        };
-
-        // Determine conversation type and get decision_id if applicable
         let conv = state.db.get_conversation(&conv_id).map_err(db_err)?;
         let conv_type = conv.map(|c| c.conv_type).unwrap_or_else(|| "chat".to_string());
 
@@ -109,7 +96,7 @@ pub async fn send_message(
             None
         };
 
-        (config.provider, config.api_key, active_model, config.ollama_url, conv_id, history, conv_type, decision_id)
+        (config.openrouter_api_key, config.model, conv_id, history, conv_type, decision_id)
     };
 
     let app_data_dir = {
@@ -118,10 +105,8 @@ pub async fn send_message(
     };
 
     let response_text = llm::send_message(
-        &provider,
         &api_key,
         &model,
-        &ollama_url,
         history_messages,
         &app_data_dir,
         &on_event,
@@ -157,49 +142,34 @@ pub fn get_messages(state: State<'_, Mutex<AppState>>, conversation_id: String) 
 pub fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<SettingsResponse, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     let config = config::load_config(&state.app_data_dir);
-    let preview = if config.api_key.len() > 8 {
-        format!("{}...{}", &config.api_key[..4], &config.api_key[config.api_key.len()-4..])
-    } else if !config.api_key.is_empty() {
+    let preview = if config.openrouter_api_key.len() > 8 {
+        format!("{}...{}", &config.openrouter_api_key[..4], &config.openrouter_api_key[config.openrouter_api_key.len()-4..])
+    } else if !config.openrouter_api_key.is_empty() {
         "****".to_string()
     } else {
         String::new()
     };
-    let provider_str = match config.provider {
-        Provider::Anthropic => "anthropic",
-        Provider::Ollama => "ollama",
-    };
     Ok(SettingsResponse {
-        provider: provider_str.to_string(),
-        api_key_set: !config.api_key.is_empty(),
+        api_key_set: !config.openrouter_api_key.is_empty(),
         api_key_preview: preview,
         model: config.model,
-        ollama_url: config.ollama_url,
-        ollama_model: config.ollama_model,
+        agent_models: config.agent_models,
     })
 }
 
 #[tauri::command]
 pub fn save_settings(
     state: State<'_, Mutex<AppState>>,
-    provider: String,
     api_key: String,
     model: String,
-    ollama_url: String,
-    ollama_model: String,
 ) -> Result<(), String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     let existing = config::load_config(&state.app_data_dir);
-    let final_key = if api_key.is_empty() { existing.api_key } else { api_key };
-    let prov = match provider.as_str() {
-        "ollama" => Provider::Ollama,
-        _ => Provider::Anthropic,
-    };
+    let final_key = if api_key.is_empty() { existing.openrouter_api_key } else { api_key };
     let config = AppConfig {
-        provider: prov,
-        api_key: final_key,
+        openrouter_api_key: final_key,
         model,
-        ollama_url,
-        ollama_model,
+        agent_models: existing.agent_models,
     };
     config::save_config(&state.app_data_dir, &config)
 }
@@ -301,7 +271,6 @@ pub fn get_profile_files_detailed(state: State<'_, Mutex<AppState>>) -> Result<V
 pub fn update_profile_file(state: State<'_, Mutex<AppState>>, filename: String, content: String) -> Result<ProfileFileInfo, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     profile::write_profile_file(&state.app_data_dir, &filename, &content)?;
-    // Re-read to get updated metadata
     let dir = profile::get_profile_dir(&state.app_data_dir);
     let path = dir.join(&filename);
     let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -352,6 +321,22 @@ pub fn update_agent_file(state: State<'_, Mutex<AppState>>, filename: String, co
 }
 
 #[tauri::command]
+pub fn save_agent_model(
+    state: State<'_, Mutex<AppState>>,
+    agent_key: String,
+    model: String,
+) -> Result<(), String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    let mut config = config::load_config(&state.app_data_dir);
+    if model.is_empty() {
+        config.agent_models.remove(&agent_key);
+    } else {
+        config.agent_models.insert(agent_key, model);
+    }
+    config::save_config(&state.app_data_dir, &config)
+}
+
+#[tauri::command]
 pub fn open_agents_folder(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     let dir = agents::get_agents_dir(&state.app_data_dir);
@@ -368,7 +353,6 @@ pub async fn start_debate(
     decision_id: String,
     quick_mode: bool,
 ) -> Result<(), String> {
-    // Validate that the decision exists and has enough data
     {
         let state = state.lock().map_err(|e| e.to_string())?;
         let decision = state.db.get_decision(&decision_id)
@@ -394,14 +378,12 @@ pub async fn start_debate(
         }
     }
 
-    // Create cancel flag
     let cancel_flag = Arc::new(AtomicBool::new(false));
     {
         let mut state = state.lock().map_err(|e| e.to_string())?;
         state.debate_cancel_flags.insert(decision_id.clone(), cancel_flag.clone());
     }
 
-    // Spawn the debate as a background task
     let dec_id = decision_id.clone();
     tokio::spawn(async move {
         if let Err(e) = debate::run_debate(app_handle.clone(), dec_id.clone(), quick_mode, cancel_flag).await {
@@ -428,7 +410,6 @@ pub fn cancel_debate(state: State<'_, Mutex<AppState>>, decision_id: String) -> 
     if let Some(flag) = state.debate_cancel_flags.get(&decision_id) {
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    // Reset status to analyzing
     state.db.update_decision_status(&decision_id, "analyzing").map_err(db_err)?;
     state.debate_cancel_flags.remove(&decision_id);
     Ok(())

@@ -1,10 +1,11 @@
 use crate::agents::{self, Agent};
 use crate::commands::AppState;
-use crate::config::{self, Provider};
+use crate::config;
 use crate::decisions;
 use crate::llm;
 use crate::profile;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
@@ -141,10 +142,8 @@ fn format_transcript(rounds: &[crate::db::DebateRound]) -> String {
 
 /// Call a single agent with retry logic, streaming tokens to frontend.
 async fn call_agent_with_retry(
-    provider: &Provider,
     api_key: &str,
     model: &str,
-    ollama_url: &str,
     agent: Agent,
     system_prompt: &str,
     user_prompt: &str,
@@ -157,10 +156,8 @@ async fn call_agent_with_retry(
     let mut last_err = String::new();
     for attempt in 0..=max_retries {
         match llm::call_llm_streaming_debate(
-            provider,
             api_key,
             model,
-            ollama_url,
             system_prompt,
             user_prompt,
             app_handle,
@@ -183,10 +180,9 @@ async fn call_agent_with_retry(
 
 /// Run a full debate round where debaters respond one at a time (sequential streaming).
 async fn run_sequential_round(
-    provider: &Provider,
     api_key: &str,
-    model: &str,
-    ollama_url: &str,
+    default_model: &str,
+    agent_models: &HashMap<String, String>,
     brief: &str,
     existing_rounds: &[crate::db::DebateRound],
     round_number: i32,
@@ -218,8 +214,9 @@ async fn run_sequential_round(
         }
 
         let system_prompt = agent.load_prompt(app_data_dir);
+        let agent_model = agent_models.get(agent.key()).filter(|m| !m.is_empty()).map(|m| m.as_str()).unwrap_or(default_model);
         let result = call_agent_with_retry(
-            provider, api_key, model, ollama_url,
+            api_key, agent_model,
             *agent, &system_prompt, &user_prompt, 2,
             app_handle, decision_id, round_number, exchange_number,
         ).await;
@@ -287,7 +284,6 @@ pub async fn run_debate(
     {
         let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
         let state_guard = state.lock().map_err(|e| e.to_string())?;
-        // Clear any previous debate data
         state_guard.db.delete_debate_rounds(&decision_id).map_err(|e| e.to_string())?;
         state_guard.db.update_debate_brief(&decision_id, &brief).map_err(|e| e.to_string())?;
         state_guard.db.update_debate_started(&decision_id).map_err(|e| e.to_string())?;
@@ -297,15 +293,11 @@ pub async fn run_debate(
     let _ = app_handle.emit("debate-started", json!({ "decision_id": decision_id }));
 
     // Load LLM config and app_data_dir
-    let (provider, api_key, model, ollama_url, app_data_dir) = {
+    let (api_key, model, agent_models, app_data_dir) = {
         let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
         let state_guard = state.lock().map_err(|e| e.to_string())?;
         let config = config::load_config(&state_guard.app_data_dir);
-        let active_model = match config.provider {
-            Provider::Anthropic => config.model.clone(),
-            Provider::Ollama => config.ollama_model.clone(),
-        };
-        (config.provider, config.api_key, active_model, config.ollama_url, state_guard.app_data_dir.clone())
+        (config.openrouter_api_key, config.model, config.agent_models, state_guard.app_data_dir.clone())
     };
 
     // Ensure agent prompt files exist
@@ -315,7 +307,7 @@ pub async fn run_debate(
 
     // 4. Round 1: Opening Positions
     let round1 = run_sequential_round(
-        &provider, &api_key, &model, &ollama_url,
+        &api_key, &model, &agent_models,
         &brief, &all_rounds, 1, 1,
         &app_handle, &decision_id, &cancel_flag, &app_data_dir,
     ).await?;
@@ -329,7 +321,7 @@ pub async fn run_debate(
             return handle_cancellation(&app_handle, &decision_id);
         }
         let r2e1 = run_sequential_round(
-            &provider, &api_key, &model, &ollama_url,
+            &api_key, &model, &agent_models,
             &brief, &all_rounds, 2, 1,
             &app_handle, &decision_id, &cancel_flag, &app_data_dir,
         ).await?;
@@ -340,7 +332,7 @@ pub async fn run_debate(
             return handle_cancellation(&app_handle, &decision_id);
         }
         let r2e2 = run_sequential_round(
-            &provider, &api_key, &model, &ollama_url,
+            &api_key, &model, &agent_models,
             &brief, &all_rounds, 2, 2,
             &app_handle, &decision_id, &cancel_flag, &app_data_dir,
         ).await?;
@@ -351,7 +343,7 @@ pub async fn run_debate(
             return handle_cancellation(&app_handle, &decision_id);
         }
         let round3 = run_sequential_round(
-            &provider, &api_key, &model, &ollama_url,
+            &api_key, &model, &agent_models,
             &brief, &all_rounds, 3, 1,
             &app_handle, &decision_id, &cancel_flag, &app_data_dir,
         ).await?;
@@ -367,8 +359,9 @@ pub async fn run_debate(
     let moderator_user_prompt = agents::moderator_prompt(&brief, &transcript);
     let moderator_system_prompt = Agent::Moderator.load_prompt(&app_data_dir);
 
+    let moderator_model = agent_models.get("moderator").filter(|m| !m.is_empty()).map(|m| m.as_str()).unwrap_or(&model);
     let moderator_response = call_agent_with_retry(
-        &provider, &api_key, &model, &ollama_url,
+        &api_key, moderator_model,
         Agent::Moderator, &moderator_system_prompt, &moderator_user_prompt, 2,
         &app_handle, &decision_id, 99, 1,
     ).await?;
@@ -424,23 +417,19 @@ fn update_summary_from_debate(
     all_rounds: &[crate::db::DebateRound],
     moderator_response: &str,
 ) -> Result<(), String> {
-    // Build final_votes from the last round each debater participated in
     let mut final_votes = serde_json::Map::new();
     let debaters = Agent::all_debaters();
 
-    // Look at Round 3 first, fall back to highest round
     for agent in &debaters {
         let last_entry = all_rounds.iter()
             .filter(|r| r.agent == agent.key())
             .last();
         if let Some(entry) = last_entry {
-            // Take first ~100 chars as vote summary
             let vote = entry.content.chars().take(200).collect::<String>();
             final_votes.insert(agent.key().to_string(), Value::String(vote));
         }
     }
 
-    // Parse moderator response for structured sections
     let consensus = extract_section(moderator_response, "Where the Committee Agreed");
     let disagreements = extract_section(moderator_response, "Key Disagreements");
     let biases = extract_section(moderator_response, "Biases & Blind Spots Identified");
@@ -452,11 +441,9 @@ fn update_summary_from_debate(
         "final_votes": final_votes,
     });
 
-    // Parse recommendation from moderator
     let rec_section = extract_section(moderator_response, "Recommendation");
     let recommendation = parse_moderator_recommendation(&rec_section, moderator_response);
 
-    // Update the decision summary
     let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
     let state_guard = state.lock().map_err(|e| e.to_string())?;
 
@@ -480,7 +467,6 @@ fn update_summary_from_debate(
     let merged = decisions::merge_summary(existing_summary.as_deref(), &update);
     state_guard.db.update_decision_summary(decision_id, &merged).map_err(|e| e.to_string())?;
 
-    // Emit summary update to frontend
     let _ = app_handle.emit("decision-summary-updated", json!({
         "decision_id": decision_id,
         "summary": merged,
@@ -495,7 +481,6 @@ fn extract_section(text: &str, heading: &str) -> String {
     let marker = format!("## {}", heading);
     if let Some(start) = text.find(&marker) {
         let after = &text[start + marker.len()..];
-        // Find next ## heading or end
         let end = after.find("\n## ").unwrap_or(after.len());
         after[..end].trim().to_string()
     } else {
@@ -530,7 +515,6 @@ fn parse_moderator_recommendation(rec_section: &str, full_text: &str) -> Option<
         .to_lowercase();
     let reasoning = extract_bold_value(text, "Reasoning")
         .unwrap_or_else(|| {
-            // Fall back to using the section text as reasoning
             rec_section.lines()
                 .filter(|l| !l.starts_with("**"))
                 .map(|l| l.trim())
@@ -539,10 +523,8 @@ fn parse_moderator_recommendation(rec_section: &str, full_text: &str) -> Option<
                 .join(" ")
         });
 
-    // Get tradeoffs section
     let tradeoffs = extract_section(full_text, "What You're Giving Up");
 
-    // Get action plan
     let action_plan = extract_section(full_text, "Action Plan");
     let next_steps: Vec<String> = split_to_points(&action_plan);
 

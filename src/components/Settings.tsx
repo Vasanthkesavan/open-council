@@ -12,14 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import ModelSelector from "@/components/ModelSelector";
 
 interface SettingsProps {
   onClose: () => void;
@@ -28,20 +22,14 @@ interface SettingsProps {
 }
 
 interface SettingsResponse {
-  provider: string;
   api_key_set: boolean;
   api_key_preview: string;
   model: string;
-  ollama_url: string;
-  ollama_model: string;
 }
 
 export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps) {
-  const [provider, setProvider] = useState<"anthropic" | "ollama">("anthropic");
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("claude-sonnet-4-5-20250929");
-  const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
-  const [ollamaModel, setOllamaModel] = useState("llama3.1:8b");
+  const [model, setModel] = useState("anthropic/claude-sonnet-4-5");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentPreview, setCurrentPreview] = useState("");
@@ -54,20 +42,17 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
   async function loadSettings() {
     try {
       const settings = await invoke<SettingsResponse>("get_settings");
-      setProvider(settings.provider === "ollama" ? "ollama" : "anthropic");
       setModel(settings.model);
       setCurrentPreview(settings.api_key_preview);
       setHasExistingKey(settings.api_key_set);
-      setOllamaUrl(settings.ollama_url);
-      setOllamaModel(settings.ollama_model);
     } catch (err) {
       console.error("Failed to load settings:", err);
     }
   }
 
   async function handleSave() {
-    if (provider === "anthropic" && mustSetKey && !apiKey.trim() && !hasExistingKey) {
-      setError("Please enter your API key to get started.");
+    if (mustSetKey && !apiKey.trim() && !hasExistingKey) {
+      setError("Please enter your OpenRouter API key to get started.");
       return;
     }
 
@@ -76,11 +61,8 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
 
     try {
       await invoke("save_settings", {
-        provider,
         apiKey: apiKey.trim(),
-        model,
-        ollamaUrl: ollamaUrl.trim(),
-        ollamaModel: ollamaModel.trim(),
+        model: model.trim(),
       });
       onSaved();
     } catch (err) {
@@ -120,12 +102,12 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <SettingsIcon className="h-5 w-5" />
-            {mustSetKey ? "Welcome! Configure your AI" : "Settings"}
+            {mustSetKey ? "Welcome! Set up OpenRouter" : "Settings"}
           </DialogTitle>
           {mustSetKey && (
             <DialogDescription>
-              Choose a provider to get started. Use Anthropic's API with a key, or
-              run models locally with Ollama.
+              Decision Copilot uses OpenRouter to access AI models. Enter your
+              API key to get started.
             </DialogDescription>
           )}
         </DialogHeader>
@@ -133,105 +115,37 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
         <Separator />
 
         <div className="space-y-5">
-          {/* Provider Toggle */}
+          {/* API Key */}
           <div>
-            <label className="text-sm font-medium text-muted-foreground block mb-2">
-              Provider
+            <label className="text-sm font-medium text-muted-foreground block mb-1.5">
+              OpenRouter API Key
             </label>
-            <div className="flex gap-2">
-              <Button
-                variant={provider === "anthropic" ? "default" : "outline"}
-                className="flex-1"
-                onClick={() => setProvider("anthropic")}
-              >
-                Anthropic API
-              </Button>
-              <Button
-                variant={provider === "ollama" ? "default" : "outline"}
-                className="flex-1"
-                onClick={() => setProvider("ollama")}
-              >
-                Ollama (Local)
-              </Button>
-            </div>
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={currentPreview || "sk-or-v1-..."}
+            />
+            {hasExistingKey && !apiKey && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Current key: {currentPreview}. Leave blank to keep it.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1">
+              Don't have one?{" "}
+              <span className="text-foreground font-medium">
+                Get a free key at openrouter.ai/keys
+              </span>
+            </p>
           </div>
 
-          {/* Anthropic Settings */}
-          {provider === "anthropic" && (
-            <>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground block mb-1.5">
-                  API Key
-                </label>
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={currentPreview || "sk-ant-..."}
-                />
-                {hasExistingKey && !apiKey && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Current key: {currentPreview}. Leave blank to keep it.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label className="text-sm font-medium text-muted-foreground block mb-1.5">
-                  Model
-                </label>
-                <Select value={model} onValueChange={setModel}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="claude-sonnet-4-5-20250929">
-                      Claude Sonnet 4.5 (Recommended)
-                    </SelectItem>
-                    <SelectItem value="claude-haiku-4-5-20251001">
-                      Claude Haiku 4.5 (Faster &amp; Cheaper)
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </>
-          )}
-
-          {/* Ollama Settings */}
-          {provider === "ollama" && (
-            <>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground block mb-1.5">
-                  Ollama URL
-                </label>
-                <Input
-                  type="text"
-                  value={ollamaUrl}
-                  onChange={(e) => setOllamaUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Make sure Ollama is running locally.
-                </p>
-              </div>
-
-              <div>
-                <label className="text-sm font-medium text-muted-foreground block mb-1.5">
-                  Model
-                </label>
-                <Input
-                  type="text"
-                  value={ollamaModel}
-                  onChange={(e) => setOllamaModel(e.target.value)}
-                  placeholder="llama3.1:8b"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Recommended: llama3.1:8b, qwen2.5, mistral. Pull with{" "}
-                  <code className="text-foreground">ollama pull model-name</code>
-                </p>
-              </div>
-            </>
-          )}
+          {/* Model */}
+          <div>
+            <label className="text-sm font-medium text-muted-foreground block mb-1.5">
+              Default Model
+            </label>
+            <ModelSelector value={model} onChange={setModel} />
+          </div>
 
           {/* Profile Files */}
           <div>

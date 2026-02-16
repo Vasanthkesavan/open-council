@@ -20,12 +20,9 @@ import Settings from "./components/Settings";
 import "./App.css";
 
 interface SettingsResponse {
-  provider: string;
   api_key_set: boolean;
   api_key_preview: string;
   model: string;
-  ollama_url: string;
-  ollama_model: string;
 }
 
 interface CreateDecisionResponse {
@@ -79,12 +76,9 @@ function App() {
   async function checkApiKey() {
     try {
       const settings = await invoke<SettingsResponse>("get_settings");
-      // Ollama doesn't need an API key; Anthropic does
-      const configured = settings.provider === "ollama" || settings.api_key_set;
+      const configured = settings.api_key_set;
       setApiKeySet(configured);
-      setActiveModel(
-        settings.provider === "ollama" ? settings.ollama_model : settings.model
-      );
+      setActiveModel(settings.model);
       if (!configured) {
         setShowSettings(true);
       }

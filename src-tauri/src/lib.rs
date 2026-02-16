@@ -51,6 +51,7 @@ pub fn run() {
             commands::remove_profile_file,
             commands::get_agent_files,
             commands::update_agent_file,
+            commands::save_agent_model,
             commands::open_agents_folder,
             commands::start_debate,
             commands::get_debate,

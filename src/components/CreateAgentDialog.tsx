@@ -43,6 +43,7 @@ export default function CreateAgentDialog({
 }: CreateAgentDialogProps) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState(EMOJI_OPTIONS[0]);
+  const [voiceGender, setVoiceGender] = useState<"male" | "female">("male");
   const [description, setDescription] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +58,7 @@ export default function CreateAgentDialog({
         label: name.trim(),
         emoji,
         description: description.trim(),
+        voiceGender,
       });
       onCreated(agent);
     } catch (err) {
@@ -110,6 +112,38 @@ export default function CreateAgentDialog({
                   {e}
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground block mb-1.5">
+              Voice
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setVoiceGender("male")}
+                disabled={loading}
+                className={`flex-1 py-2 px-3 rounded-md text-sm transition-colors border ${
+                  voiceGender === "male"
+                    ? "bg-accent border-primary ring-1 ring-primary"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                Male
+              </button>
+              <button
+                type="button"
+                onClick={() => setVoiceGender("female")}
+                disabled={loading}
+                className={`flex-1 py-2 px-3 rounded-md text-sm transition-colors border ${
+                  voiceGender === "female"
+                    ? "bg-accent border-primary ring-1 ring-primary"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                Female
+              </button>
             </div>
           </div>
 

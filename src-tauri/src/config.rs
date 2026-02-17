@@ -11,10 +11,20 @@ pub struct AppConfig {
     pub model: String,
     #[serde(default)]
     pub agent_models: HashMap<String, String>,
+    #[serde(default)]
+    pub elevenlabs_api_key: String,
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String, // "elevenlabs" or "openai"
+    #[serde(default)]
+    pub voices: HashMap<String, String>, // agent_key -> voice_id overrides
 }
 
 fn default_model() -> String {
     "anthropic/claude-sonnet-4-5".to_string()
+}
+
+fn default_tts_provider() -> String {
+    "elevenlabs".to_string()
 }
 
 impl Default for AppConfig {
@@ -23,6 +33,9 @@ impl Default for AppConfig {
             openrouter_api_key: String::new(),
             model: default_model(),
             agent_models: HashMap::new(),
+            elevenlabs_api_key: String::new(),
+            tts_provider: default_tts_provider(),
+            voices: HashMap::new(),
         }
     }
 }
@@ -62,6 +75,9 @@ mod tests {
         assert!(loaded.openrouter_api_key.is_empty());
         assert_eq!(loaded.model, "anthropic/claude-sonnet-4-5");
         assert!(loaded.agent_models.is_empty());
+        assert!(loaded.elevenlabs_api_key.is_empty());
+        assert_eq!(loaded.tts_provider, "elevenlabs");
+        assert!(loaded.voices.is_empty());
     }
 
     #[test]
@@ -76,6 +92,9 @@ mod tests {
             openrouter_api_key: "sk-test-key".to_string(),
             model: "anthropic/claude-sonnet-4-5".to_string(),
             agent_models,
+            elevenlabs_api_key: "sk-eleven-test".to_string(),
+            tts_provider: "openai".to_string(),
+            voices: HashMap::new(),
         };
 
         save_config(&app_data_dir, &config).expect("config should save");
@@ -87,5 +106,23 @@ mod tests {
             loaded.agent_models.get("moderator").map(String::as_str),
             Some("anthropic/custom-model")
         );
+        assert_eq!(loaded.elevenlabs_api_key, "sk-eleven-test");
+        assert_eq!(loaded.tts_provider, "openai");
+    }
+
+    #[test]
+    fn unit_config_backward_compat_with_old_format() {
+        let dir = tempdir().expect("temp directory should exist");
+        let app_data_dir = dir.path().to_path_buf();
+
+        // Simulate old config without TTS fields
+        let old_config = r#"{"openrouter_api_key":"sk-old","model":"anthropic/claude-sonnet-4-5","agent_models":{}}"#;
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::write(get_config_path(&app_data_dir), old_config).unwrap();
+
+        let loaded = load_config(&app_data_dir);
+        assert_eq!(loaded.openrouter_api_key, "sk-old");
+        assert!(loaded.elevenlabs_api_key.is_empty());
+        assert_eq!(loaded.tts_provider, "elevenlabs");
     }
 }

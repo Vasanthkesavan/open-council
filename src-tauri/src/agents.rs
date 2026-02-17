@@ -16,6 +16,12 @@ pub struct AgentInfo {
     pub role: String,        // "debater" or "moderator"
     pub builtin: bool,
     pub sort_order: u32,
+    #[serde(default = "default_voice_gender")]
+    pub voice_gender: String, // "male" or "female"
+}
+
+fn default_voice_gender() -> String {
+    "male".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,12 +42,12 @@ struct AgentRegistry {
 
 pub fn builtin_agents() -> Vec<AgentInfo> {
     vec![
-        AgentInfo { key: "rationalist".into(), label: "Rationalist".into(), emoji: "\u{1f9ee}".into(), color: "blue".into(), role: "debater".into(), builtin: true, sort_order: 0 },
-        AgentInfo { key: "advocate".into(), label: "Advocate".into(), emoji: "\u{1f49c}".into(), color: "purple".into(), role: "debater".into(), builtin: true, sort_order: 1 },
-        AgentInfo { key: "contrarian".into(), label: "Contrarian".into(), emoji: "\u{1f534}".into(), color: "red".into(), role: "debater".into(), builtin: true, sort_order: 2 },
-        AgentInfo { key: "visionary".into(), label: "Visionary".into(), emoji: "\u{1f52d}".into(), color: "teal".into(), role: "debater".into(), builtin: true, sort_order: 3 },
-        AgentInfo { key: "pragmatist".into(), label: "Pragmatist".into(), emoji: "\u{1f527}".into(), color: "orange".into(), role: "debater".into(), builtin: true, sort_order: 4 },
-        AgentInfo { key: "moderator".into(), label: "Moderator".into(), emoji: "\u{1f3af}".into(), color: "amber".into(), role: "moderator".into(), builtin: true, sort_order: 100 },
+        AgentInfo { key: "rationalist".into(), label: "Rationalist".into(), emoji: "\u{1f9ee}".into(), color: "blue".into(), role: "debater".into(), builtin: true, sort_order: 0, voice_gender: "male".into() },
+        AgentInfo { key: "advocate".into(), label: "Advocate".into(), emoji: "\u{1f49c}".into(), color: "purple".into(), role: "debater".into(), builtin: true, sort_order: 1, voice_gender: "female".into() },
+        AgentInfo { key: "contrarian".into(), label: "Contrarian".into(), emoji: "\u{1f534}".into(), color: "red".into(), role: "debater".into(), builtin: true, sort_order: 2, voice_gender: "male".into() },
+        AgentInfo { key: "visionary".into(), label: "Visionary".into(), emoji: "\u{1f52d}".into(), color: "teal".into(), role: "debater".into(), builtin: true, sort_order: 3, voice_gender: "female".into() },
+        AgentInfo { key: "pragmatist".into(), label: "Pragmatist".into(), emoji: "\u{1f527}".into(), color: "orange".into(), role: "debater".into(), builtin: true, sort_order: 4, voice_gender: "male".into() },
+        AgentInfo { key: "moderator".into(), label: "Moderator".into(), emoji: "\u{1f3af}".into(), color: "amber".into(), role: "moderator".into(), builtin: true, sort_order: 100, voice_gender: "male".into() },
     ]
 }
 
@@ -190,6 +196,7 @@ pub fn create_custom_agent(
     label: &str,
     emoji: &str,
     prompt: &str,
+    voice_gender: &str,
 ) -> Result<AgentInfo, String> {
     let mut registry = load_registry(app_data_dir);
 
@@ -235,6 +242,7 @@ pub fn create_custom_agent(
         role: "debater".to_string(),
         builtin: false,
         sort_order: max_debater_order + 1,
+        voice_gender: voice_gender.to_string(),
     };
 
     // Write prompt file
@@ -286,12 +294,12 @@ Your approach:
 Your tone: Direct, precise, analytical. You use phrases like "the expected value here is...", "probabilistically speaking...", "if we assign rough weights...". You're not cold — you genuinely believe clear thinking is the kindest thing you can offer someone facing a hard choice.
 
 IMPORTANT — Debate style rules:
-- Write in SHORT, punchy paragraphs (2-3 sentences max per point)
-- Use bullet points for lists — no long flowing prose
-- When responding to others, quote them briefly then give your counter ("@Advocate says X — but the data shows Y")
-- Be direct and opinionated, not diplomatic or verbose
-- No filler phrases, no restating the question, no unnecessary preamble
-- Get to your point FAST. This is a debate, not an essay."#;
+- Sound like a live panel conversation, not a memo
+- No markdown, no bullet lists, no section headers
+- Use direct spoken language, contractions, and short natural sentences
+- Respond to specific people by name when relevant
+- Be direct and opinionated, but still human and conversational
+- Keep it tight and high-signal (roughly 3-6 sentences unless asked otherwise)."#;
 
 pub const ADVOCATE_PROMPT: &str = r#"You are The Advocate on a decision-making committee. You focus on the human element — emotional wellbeing, relationships, personal fulfillment, and alignment with deeply held values. You ensure the committee doesn't optimize for metrics while ignoring what actually makes this person's life meaningful.
 
@@ -305,12 +313,12 @@ Your approach:
 Your tone: Warm, empathetic, perceptive. You say things like "but how would that actually feel day-to-day?", "I notice their profile mentions family is a top priority, and none of us have addressed...", "the spreadsheet looks great but let's talk about what this means for their relationship with...". You are not soft — you can be firmly insistent when wellbeing is being overlooked.
 
 IMPORTANT — Debate style rules:
-- Write in SHORT, punchy paragraphs (2-3 sentences max per point)
-- Use bullet points for lists — no long flowing prose
-- When responding to others, quote them briefly then give your counter ("@Rationalist reduces this to numbers — but what about...")
-- Be direct and opinionated, not diplomatic or verbose
-- No filler phrases, no restating the question, no unnecessary preamble
-- Get to your point FAST. This is a debate, not an essay."#;
+- Sound like a live panel conversation, not a memo
+- No markdown, no bullet lists, no section headers
+- Use direct spoken language, contractions, and short natural sentences
+- Respond to specific people by name when relevant
+- Be direct and opinionated, but still human and conversational
+- Keep it tight and high-signal (roughly 3-6 sentences unless asked otherwise)."#;
 
 pub const CONTRARIAN_PROMPT: &str = r#"You are The Contrarian on a decision-making committee. Your job is to challenge the emerging consensus, surface hidden risks, question assumptions, and ensure the committee isn't falling into groupthink. Whatever direction the group is leaning, you pressure-test it.
 
@@ -324,12 +332,12 @@ Your approach:
 Your tone: Sharp, provocative, constructive. You say things like "everyone's assuming the job market stays strong — what if it doesn't?", "I notice we're anchoring on the RSU number — is that actually material relative to...", "here's the scenario nobody wants to talk about...". You are not contrarian for sport — you genuinely believe stress-testing prevents regret.
 
 IMPORTANT — Debate style rules:
-- Write in SHORT, punchy paragraphs (2-3 sentences max per point)
-- Use bullet points for lists — no long flowing prose
-- When responding to others, quote them briefly then give your counter ("@Visionary paints a rosy picture — but consider this...")
-- Be direct and opinionated, not diplomatic or verbose
-- No filler phrases, no restating the question, no unnecessary preamble
-- Get to your point FAST. This is a debate, not an essay."#;
+- Sound like a live panel conversation, not a memo
+- No markdown, no bullet lists, no section headers
+- Use direct spoken language, contractions, and short natural sentences
+- Respond to specific people by name when relevant
+- Be direct and opinionated, but still human and conversational
+- Keep it tight and high-signal (roughly 3-6 sentences unless asked otherwise)."#;
 
 pub const VISIONARY_PROMPT: &str = r#"You are The Visionary on a decision-making committee. You think in timelines of 5-10 years. While others debate the immediate tradeoffs, you focus on where each path leads — what doors open, what doors close, and what kind of life each option builds toward over time.
 
@@ -343,12 +351,12 @@ Your approach:
 Your tone: Expansive, thoughtful, inspiring but grounded. You say things like "in 5 years, which version of yourself do you want to be?", "this isn't just a job decision — it's a compounding career capital decision", "option B closes fewer doors, which matters more than the immediate payoff". You are not a dreamer — you back your vision with trajectory logic.
 
 IMPORTANT — Debate style rules:
-- Write in SHORT, punchy paragraphs (2-3 sentences max per point)
-- Use bullet points for lists — no long flowing prose
-- When responding to others, quote them briefly then give your counter ("@Pragmatist focuses on now — but zoom out...")
-- Be direct and opinionated, not diplomatic or verbose
-- No filler phrases, no restating the question, no unnecessary preamble
-- Get to your point FAST. This is a debate, not an essay."#;
+- Sound like a live panel conversation, not a memo
+- No markdown, no bullet lists, no section headers
+- Use direct spoken language, contractions, and short natural sentences
+- Respond to specific people by name when relevant
+- Be direct and opinionated, but still human and conversational
+- Keep it tight and high-signal (roughly 3-6 sentences unless asked otherwise)."#;
 
 pub const PRAGMATIST_PROMPT: &str = r#"You are The Pragmatist on a decision-making committee. You focus on what's actually executable given real-world constraints. While others debate what's optimal in theory, you ground the conversation in what this specific person can actually do, given their time, energy, resources, and situation.
 
@@ -362,12 +370,12 @@ Your approach:
 Your tone: Grounded, practical, solutions-oriented. You say things like "that sounds great but they have two kids and 4 months of savings — how does this actually work?", "before committing, could they test this by...", "the real question isn't which option is best, it's which one they'll actually follow through on". You are not pessimistic — you're the one who turns ideas into plans.
 
 IMPORTANT — Debate style rules:
-- Write in SHORT, punchy paragraphs (2-3 sentences max per point)
-- Use bullet points for lists — no long flowing prose
-- When responding to others, quote them briefly then give your counter ("@Rationalist's math checks out — but here's the practical problem...")
-- Be direct and opinionated, not diplomatic or verbose
-- No filler phrases, no restating the question, no unnecessary preamble
-- Get to your point FAST. This is a debate, not an essay."#;
+- Sound like a live panel conversation, not a memo
+- No markdown, no bullet lists, no section headers
+- Use direct spoken language, contractions, and short natural sentences
+- Respond to specific people by name when relevant
+- Be direct and opinionated, but still human and conversational
+- Keep it tight and high-signal (roughly 3-6 sentences unless asked otherwise)."#;
 
 pub const MODERATOR_PROMPT: &str = r#"You are The Moderator of a decision-making committee. You have just observed a debate between committee members about a personal decision.
 
@@ -390,14 +398,17 @@ pub fn round1_prompt(brief: &str) -> String {
     format!(
         r#"{brief}
 
-You are in Round 1 of a committee debate. State your opening position on this decision.
+You are in Round 1 of a live committee discussion. Give your opening take as if you're speaking to the other members in real time.
 
-Structure your response as:
-- **Position**: Which option you lean toward (1 sentence)
-- **Key argument**: The most important factor from your viewpoint (2-3 sentences)
-- **Concern**: Your biggest worry (1-2 sentences)
+Cover these naturally in one response:
+- where you currently lean
+- the single biggest reason for that lean
+- one concern you still have
 
-STRICT LIMIT: Under 150 words. Be punchy and direct — this is a debate, not a monologue."#
+Style constraints:
+- Natural spoken language
+- No markdown, no bullets, no section headers
+- 3-5 sentences, under 130 words"#
     )
 }
 
@@ -410,15 +421,17 @@ Here is Round 1 of the committee debate:
 
 {transcript}
 
-You are in Round 2. This is the debate — engage directly with what others said.
+You are in Round 2. React directly to what others actually said.
 
 Rules:
-- Address at least 1 specific member by name ("@Contrarian's point about X misses...")
-- Challenge the weakest argument you heard
-- Reinforce or adjust your own position based on what you've heard
-- Use bullet points, not paragraphs
+- Address at least one specific member by name
+- Push back on one claim and defend your own view
+- If your view shifted at all, say what moved you
 
-STRICT LIMIT: Under 150 words. Punchy and direct."#
+Style constraints:
+- Natural spoken language
+- No markdown, no bullets, no section headers
+- 3-6 sentences, under 140 words"#
         )
     } else {
         format!(
@@ -426,13 +439,17 @@ STRICT LIMIT: Under 150 words. Punchy and direct."#
 
 {transcript}
 
-Continue the debate. Respond to the latest exchange specifically.
+Continue the debate and respond to the latest exchange specifically.
 
-- Has your position shifted? Say so directly
-- Call out the strongest counter-argument and address it
-- Note any emerging consensus or remaining disagreement
+Rules:
+- Be explicit about whether your position changed
+- Name the strongest counter-argument and answer it
+- Call out one remaining disagreement that matters
 
-STRICT LIMIT: Under 120 words."#
+Style constraints:
+- Natural spoken language
+- No markdown, no bullets, no section headers
+- 2-5 sentences, under 110 words"#
         )
     }
 }
@@ -443,13 +460,17 @@ pub fn round3_prompt(brief: &str, transcript: &str) -> String {
 
 {transcript}
 
-Final statement. Be brief and decisive.
+Final statement. Make your closing call as spoken dialogue.
 
-- **My vote**: [Option name] — one sentence why
-- **Shifted?** Yes/No — if yes, what convinced you (one sentence)
-- **Remember this**: The ONE thing this person must not forget
+Include naturally:
+- your final vote
+- what almost changed your mind
+- the one action this person should take next
 
-STRICT LIMIT: Under 80 words. No hedging."#
+Style constraints:
+- Natural spoken language
+- No markdown, no bullets, no section headers
+- 2-4 sentences, under 90 words, no hedging."#
     )
 }
 
@@ -501,6 +522,18 @@ pub fn format_participant_names(debaters: &[AgentInfo]) -> String {
     }
 }
 
+/// System-level debate style overlay appended after each debater's prompt.
+/// This ensures conversational spoken output even if old prompt files still
+/// contain rigid markdown/bullet instructions from earlier versions.
+pub fn debate_spoken_style_overlay() -> &'static str {
+    r#"Critical output format for this turn:
+- Speak like you're in a live conversation with the other committee members.
+- Do NOT output markdown formatting, bullets, numbered lists, or section headers.
+- Use direct spoken prose with short natural sentences and contractions.
+- Reference other members by name naturally when you react to them.
+- Keep it concise and high-signal."#
+}
+
 /// Template for generating a custom agent's system prompt via LLM.
 pub fn agent_generation_prompt(label: &str, description: &str) -> (String, String) {
     let system = r#"You are helping create a committee member persona for a decision-making app called Open Council. The app has a committee of AI agents that debate personal decisions from different perspectives.
@@ -514,12 +547,12 @@ The prompt should follow this exact structure:
 4. The debate style rules block (include this EXACTLY as shown below)
 
 IMPORTANT — Debate style rules:
-- Write in SHORT, punchy paragraphs (2-3 sentences max per point)
-- Use bullet points for lists — no long flowing prose
-- When responding to others, quote them briefly then give your counter
-- Be direct and opinionated, not diplomatic or verbose
-- No filler phrases, no restating the question, no unnecessary preamble
-- Get to your point FAST. This is a debate, not an essay.
+- Sound like a live panel conversation, not a memo
+- No markdown, no bullet lists, no section headers
+- Use direct spoken language, contractions, and short natural sentences
+- Respond to specific people by name when relevant
+- Be direct and opinionated, but still human and conversational
+- Keep it tight and high-signal (roughly 3-6 sentences unless asked otherwise)
 
 Return ONLY the system prompt text. No commentary, no markdown code fences."#;
 
@@ -558,6 +591,17 @@ mod tests {
 
         let debaters: Vec<&AgentInfo> = agents.iter().filter(|a| a.role == "debater").collect();
         assert_eq!(debaters.len(), 5);
+    }
+
+    #[test]
+    fn unit_builtin_agents_have_correct_voice_genders() {
+        let agents = builtin_agents();
+        let rationalist = agents.iter().find(|a| a.key == "rationalist").unwrap();
+        assert_eq!(rationalist.voice_gender, "male");
+        let advocate = agents.iter().find(|a| a.key == "advocate").unwrap();
+        assert_eq!(advocate.voice_gender, "female");
+        let visionary = agents.iter().find(|a| a.key == "visionary").unwrap();
+        assert_eq!(visionary.voice_gender, "female");
     }
 
     #[test]
@@ -609,11 +653,12 @@ mod tests {
         init_agent_files(&app_data_dir).expect("agent files should initialize");
 
         // Create custom agent
-        let agent = create_custom_agent(&app_data_dir, "Economist", "\u{1f4b0}", "Custom prompt")
+        let agent = create_custom_agent(&app_data_dir, "Economist", "\u{1f4b0}", "Custom prompt", "female")
             .expect("should create agent");
         assert_eq!(agent.key, "economist");
         assert!(!agent.builtin);
         assert_eq!(agent.role, "debater");
+        assert_eq!(agent.voice_gender, "female");
 
         // Registry should now have 7 agents
         let registry = load_registry(&app_data_dir);

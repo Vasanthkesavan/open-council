@@ -1,11 +1,12 @@
 use crate::agents;
 use crate::config::{self, AppConfig};
-use crate::db::{Database, DebateRound, Decision};
+use crate::db::{Database, DebateAudio, DebateRound, Decision};
 use crate::debate;
 use crate::llm;
 use crate::profile;
 use crate::profile::ProfileFileInfo;
 use crate::llm::StreamEvent;
+use crate::tts;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -34,6 +35,9 @@ pub struct SettingsResponse {
     pub api_key_preview: String,
     pub model: String,
     pub agent_models: std::collections::HashMap<String, String>,
+    pub elevenlabs_api_key_set: bool,
+    pub elevenlabs_api_key_preview: String,
+    pub tts_provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -149,11 +153,21 @@ pub fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<SettingsRespons
     } else {
         String::new()
     };
+    let elevenlabs_preview = if config.elevenlabs_api_key.len() > 8 {
+        format!("{}...{}", &config.elevenlabs_api_key[..4], &config.elevenlabs_api_key[config.elevenlabs_api_key.len()-4..])
+    } else if !config.elevenlabs_api_key.is_empty() {
+        "****".to_string()
+    } else {
+        String::new()
+    };
     Ok(SettingsResponse {
         api_key_set: !config.openrouter_api_key.is_empty(),
         api_key_preview: preview,
         model: config.model,
         agent_models: config.agent_models,
+        elevenlabs_api_key_set: !config.elevenlabs_api_key.is_empty(),
+        elevenlabs_api_key_preview: elevenlabs_preview,
+        tts_provider: config.tts_provider,
     })
 }
 
@@ -162,14 +176,23 @@ pub fn save_settings(
     state: State<'_, Mutex<AppState>>,
     api_key: String,
     model: String,
+    elevenlabs_api_key: Option<String>,
+    tts_provider: Option<String>,
 ) -> Result<(), String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     let existing = config::load_config(&state.app_data_dir);
     let final_key = if api_key.is_empty() { existing.openrouter_api_key } else { api_key };
+    let final_elevenlabs_key = match elevenlabs_api_key {
+        Some(k) if !k.is_empty() => k,
+        _ => existing.elevenlabs_api_key,
+    };
     let config = AppConfig {
         openrouter_api_key: final_key,
         model,
         agent_models: existing.agent_models,
+        elevenlabs_api_key: final_elevenlabs_key,
+        tts_provider: tts_provider.unwrap_or(existing.tts_provider),
+        voices: existing.voices,
     };
     config::save_config(&state.app_data_dir, &config)
 }
@@ -356,6 +379,7 @@ pub async fn create_custom_agent(
     label: String,
     emoji: String,
     description: String,
+    voice_gender: String,
 ) -> Result<agents::AgentInfo, String> {
     // Generate prompt via LLM
     let (api_key, model, app_data_dir) = {
@@ -370,7 +394,7 @@ pub async fn create_custom_agent(
     let (system_prompt, user_prompt) = agents::agent_generation_prompt(&label, &description);
     let generated_prompt = llm::call_llm_simple(&api_key, &model, &system_prompt, &user_prompt).await?;
 
-    agents::create_custom_agent(&app_data_dir, &label, &emoji, &generated_prompt)
+    agents::create_custom_agent(&app_data_dir, &label, &emoji, &generated_prompt, &voice_gender)
 }
 
 #[tauri::command]
@@ -459,4 +483,58 @@ pub fn cancel_debate(state: State<'_, Mutex<AppState>>, decision_id: String) -> 
     state.db.update_decision_status(&decision_id, "analyzing").map_err(db_err)?;
     state.debate_cancel_flags.remove(&decision_id);
     Ok(())
+}
+
+// ── Audio Commands ──
+
+#[tauri::command]
+pub async fn generate_debate_audio(
+    app_handle: tauri::AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    decision_id: String,
+) -> Result<tts::AudioManifest, String> {
+    let (app_data_dir, rounds) = {
+        let state = state.lock().map_err(|e| e.to_string())?;
+        let rounds = state.db.get_debate_rounds(&decision_id).map_err(db_err)?;
+        (state.app_data_dir.clone(), rounds)
+    };
+
+    if rounds.is_empty() {
+        return Err("No debate rounds found for this decision.".into());
+    }
+
+    let config = config::load_config(&app_data_dir);
+    let registry = agents::load_registry(&app_data_dir);
+
+    let manifest = tts::generate_debate_audio(
+        &app_handle,
+        &decision_id,
+        &rounds,
+        &config,
+        &registry,
+        &app_data_dir,
+    ).await?;
+
+    // Save to DB
+    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    {
+        let state = state.lock().map_err(|e| e.to_string())?;
+        state.db.save_debate_audio(
+            &decision_id,
+            &manifest_json,
+            manifest.total_duration_ms as i64,
+            &app_data_dir.join("debates").join(&decision_id).to_string_lossy(),
+        ).map_err(db_err)?;
+    }
+
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub fn get_debate_audio(
+    state: State<'_, Mutex<AppState>>,
+    decision_id: String,
+) -> Result<Option<DebateAudio>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    state.db.get_debate_audio(&decision_id).map_err(db_err)
 }

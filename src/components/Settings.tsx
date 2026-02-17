@@ -25,6 +25,9 @@ interface SettingsResponse {
   api_key_set: boolean;
   api_key_preview: string;
   model: string;
+  elevenlabs_api_key_set: boolean;
+  elevenlabs_api_key_preview: string;
+  tts_provider: string;
 }
 
 export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps) {
@@ -34,6 +37,10 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
   const [error, setError] = useState<string | null>(null);
   const [currentPreview, setCurrentPreview] = useState("");
   const [hasExistingKey, setHasExistingKey] = useState(false);
+  const [elevenlabsApiKey, setElevenlabsApiKey] = useState("");
+  const [elevenlabsPreview, setElevenlabsPreview] = useState("");
+  const [hasElevenlabsKey, setHasElevenlabsKey] = useState(false);
+  const [ttsProvider, setTtsProvider] = useState("elevenlabs");
 
   useEffect(() => {
     loadSettings();
@@ -45,6 +52,9 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
       setModel(settings.model);
       setCurrentPreview(settings.api_key_preview);
       setHasExistingKey(settings.api_key_set);
+      setElevenlabsPreview(settings.elevenlabs_api_key_preview);
+      setHasElevenlabsKey(settings.elevenlabs_api_key_set);
+      setTtsProvider(settings.tts_provider);
     } catch (err) {
       console.error("Failed to load settings:", err);
     }
@@ -63,6 +73,8 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
       await invoke("save_settings", {
         apiKey: apiKey.trim(),
         model: model.trim(),
+        elevenlabsApiKey: elevenlabsApiKey.trim() || null,
+        ttsProvider,
       });
       onSaved();
     } catch (err) {
@@ -161,6 +173,69 @@ export default function Settings({ onClose, onSaved, mustSetKey }: SettingsProps
               Open Profile Folder
             </Button>
           </div>
+
+          <Separator />
+
+          {/* Audio / TTS */}
+          <div>
+            <label className="text-sm font-medium text-muted-foreground block mb-1.5">
+              Voice Provider
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setTtsProvider("elevenlabs")}
+                className={`flex-1 py-2 px-3 rounded-md text-xs transition-colors border ${
+                  ttsProvider === "elevenlabs"
+                    ? "bg-accent border-primary ring-1 ring-primary"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                High Quality (ElevenLabs)
+              </button>
+              <button
+                type="button"
+                onClick={() => setTtsProvider("openai")}
+                className={`flex-1 py-2 px-3 rounded-md text-xs transition-colors border ${
+                  ttsProvider === "openai"
+                    ? "bg-accent border-primary ring-1 ring-primary"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                Standard (OpenAI TTS)
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {ttsProvider === "openai"
+                ? "Uses your OpenRouter key. ~$0.09 per debate."
+                : "Best voice quality. ~$1.50-2.50 per debate."}
+            </p>
+          </div>
+
+          {ttsProvider === "elevenlabs" && (
+            <div>
+              <label className="text-sm font-medium text-muted-foreground block mb-1.5">
+                ElevenLabs API Key
+              </label>
+              <Input
+                type="password"
+                value={elevenlabsApiKey}
+                onChange={(e) => setElevenlabsApiKey(e.target.value)}
+                placeholder={elevenlabsPreview || "sk-eleven-..."}
+              />
+              {hasElevenlabsKey && !elevenlabsApiKey && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Current key: {elevenlabsPreview}. Leave blank to keep it.
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                Get a key at{" "}
+                <span className="text-foreground font-medium">
+                  elevenlabs.io/api
+                </span>
+              </p>
+            </div>
+          )}
 
           {error && (
             <div className="px-3 py-2.5 rounded-lg bg-destructive/15 border border-destructive/30 text-destructive text-sm">

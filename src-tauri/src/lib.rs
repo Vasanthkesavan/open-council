@@ -6,6 +6,7 @@ mod debate;
 mod decisions;
 mod llm;
 mod profile;
+mod tts;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -59,6 +60,8 @@ pub fn run() {
             commands::start_debate,
             commands::get_debate,
             commands::cancel_debate,
+            commands::generate_debate_audio,
+            commands::get_debate_audio,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

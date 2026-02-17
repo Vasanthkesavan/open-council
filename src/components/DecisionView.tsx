@@ -110,6 +110,7 @@ export default function DecisionView({
   const [registry, setRegistry] = useState<AgentMeta[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingContentRef = useRef("");
+  const debateAutoTriggered = useRef(false);
 
   // Check if summary has enough data to start a debate
   const canStartDebate =
@@ -126,10 +127,33 @@ export default function DecisionView({
     }
   }, [status]);
 
+  // Auto-trigger committee debate when AI sets status to "analyzing"
+  useEffect(() => {
+    if (
+      status === "analyzing" &&
+      summary?.options &&
+      summary.options.length > 0 &&
+      summary?.variables &&
+      summary.variables.length > 0 &&
+      !debateActive &&
+      !hasDebateRounds &&
+      !debateAutoTriggered.current
+    ) {
+      debateAutoTriggered.current = true;
+      // Auto-start full debate with all agents
+      invoke("start_debate", { decisionId, quickMode: false, selectedAgents: null })
+        .catch((err) => {
+          console.error("Auto-start debate failed:", err);
+          debateAutoTriggered.current = false;
+        });
+    }
+  }, [status, summary, debateActive, hasDebateRounds, decisionId]);
+
   // Load decision data and agent registry
   useEffect(() => {
     setMobileTab("chat");
     setDebateActive(false);
+    debateAutoTriggered.current = false;
     loadDecision();
     loadMessages();
     invoke<AgentMeta[]>("get_agent_registry").then(setRegistry).catch(console.error);
@@ -490,8 +514,8 @@ export default function DecisionView({
         )}
       </ScrollArea>
 
-      {/* Send to Committee button */}
-      {canStartDebate && (
+      {/* Send to Committee button — fallback for manual trigger during "exploring" status */}
+      {canStartDebate && status === "exploring" && (
         <div className="px-4 py-2 border-t border-border bg-muted/20">
           <Button
             variant="outline"

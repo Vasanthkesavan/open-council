@@ -4,11 +4,149 @@ use crate::config;
 use crate::decisions;
 use crate::llm;
 use crate::profile;
+use crate::tts;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
+
+/// Normalize model output so spoken debate feels conversational in UI + TTS.
+fn normalize_spoken_debate_output(text: &str) -> String {
+    let labels = [
+        "position:",
+        "key argument:",
+        "concern:",
+        "my vote:",
+        "shifted?:",
+        "remember this:",
+    ];
+
+    let mut parts: Vec<String> = Vec::new();
+    for raw_line in text.lines() {
+        let mut line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Remove markdown heading prefixes.
+        while let Some(rest) = line.strip_prefix('#') {
+            line = rest.trim_start();
+        }
+
+        // Remove common list markers.
+        if let Some(rest) = line.strip_prefix("- ") {
+            line = rest.trim_start();
+        } else if let Some(rest) = line.strip_prefix("* ") {
+            line = rest.trim_start();
+        } else if let Some(rest) = line.strip_prefix("• ") {
+            line = rest.trim_start();
+        }
+
+        // Remove numbered-list prefixes like "1. ".
+        if let Some(dot_pos) = line.find(". ") {
+            if line[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
+                line = line[dot_pos + 2..].trim_start();
+            }
+        }
+
+        let mut cleaned = line
+            .replace("**", "")
+            .replace("__", "")
+            .replace('`', "");
+
+        let lower = cleaned.to_ascii_lowercase();
+        for label in labels {
+            if lower.starts_with(label) {
+                cleaned = cleaned[label.len()..].trim().to_string();
+                break;
+            }
+        }
+
+        if !cleaned.is_empty() {
+            parts.push(cleaned);
+        }
+    }
+
+    let merged = parts.join(" ");
+    let compact = merged
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".")
+        .replace(" ,", ",")
+        .replace(" ;", ";")
+        .replace(" :", ":");
+
+    if compact.is_empty() {
+        text.trim().to_string()
+    } else {
+        compact
+    }
+}
+
+/// Shared state for live TTS generation during debate.
+struct LiveTtsState {
+    enabled: bool,
+    config: config::AppConfig,
+    registry: Vec<AgentInfo>,
+    app_data_dir: std::path::PathBuf,
+    segment_counter: Arc<AtomicUsize>,
+    handles: Arc<Mutex<Vec<tokio::task::JoinHandle<Option<tts::AudioSegment>>>>>,
+}
+
+/// Spawn a TTS generation task for a single debate round segment.
+fn spawn_segment_tts(
+    tts_state: &LiveTtsState,
+    app_handle: &tauri::AppHandle,
+    decision_id: &str,
+    round: &crate::db::DebateRound,
+) {
+    if !tts_state.enabled { return; }
+
+    let segment_index = tts_state.segment_counter.fetch_add(1, Ordering::Relaxed);
+    let ah = app_handle.clone();
+    let did = decision_id.to_string();
+    let round_clone = round.clone();
+    let cfg = tts_state.config.clone();
+    let reg = tts_state.registry.clone();
+    let add = tts_state.app_data_dir.clone();
+    let handles = Arc::clone(&tts_state.handles);
+
+    let handle = tokio::spawn(async move {
+        let mut spoken_round = round_clone;
+        spoken_round.content = normalize_spoken_debate_output(&spoken_round.content);
+        match tts::generate_segment_audio(
+            &did, segment_index, &spoken_round, &cfg, &reg, &add,
+        ).await {
+            Ok(segment) => {
+                let audio_dir = add.join("debates").join(&did);
+                let _ = ah.emit("debate-segment-audio-ready", json!({
+                    "decision_id": did,
+                    "segment_index": segment_index,
+                    "agent": segment.agent,
+                    "round_number": segment.round,
+                    "exchange_number": segment.exchange,
+                    "audio_file": segment.audio_file,
+                    "duration_ms": segment.duration_ms,
+                    "audio_dir": audio_dir.to_string_lossy().to_string(),
+                }));
+                Some(segment)
+            }
+            Err(e) => {
+                eprintln!("Live TTS failed for segment {}: {}", segment_index, e);
+                let _ = ah.emit("debate-segment-audio-error", json!({
+                    "decision_id": did,
+                    "segment_index": segment_index,
+                    "error": e,
+                }));
+                None
+            }
+        }
+    });
+
+    let _ = handles.lock().map(|mut h| h.push(handle));
+}
 
 /// Build the decision brief from profile files + decision data + conversation messages.
 fn compile_brief(
@@ -119,20 +257,20 @@ fn format_transcript(rounds: &[crate::db::DebateRound], all_agents: &[AgentInfo]
             current_round = r.round_number;
             current_exchange = r.exchange_number;
             let header = match current_round {
-                1 => "--- Round 1: Opening Positions ---".to_string(),
-                2 => format!("--- Round 2: Debate (Exchange {}) ---", current_exchange),
-                3 => "--- Round 3: Final Positions ---".to_string(),
-                99 => "--- Moderator Synthesis ---".to_string(),
-                _ => format!("--- Round {} ---", current_round),
+                1 => "Round 1 (opening)".to_string(),
+                2 => format!("Round 2 (exchange {})", current_exchange),
+                3 => "Round 3 (final statements)".to_string(),
+                99 => "Moderator synthesis".to_string(),
+                _ => format!("Round {}", current_round),
             };
             sections.push(header);
         }
 
         let label = all_agents.iter()
             .find(|a| a.key == r.agent)
-            .map(|a| format!("{} {}", a.emoji, a.label))
+            .map(|a| a.label.clone())
             .unwrap_or_else(|| r.agent.clone());
-        sections.push(format!("**{}**:\n{}", label, r.content));
+        sections.push(format!("{}: {}", label, r.content));
     }
 
     sections.join("\n\n")
@@ -192,6 +330,7 @@ async fn run_sequential_round(
     app_data_dir: &std::path::PathBuf,
     debaters: &[AgentInfo],
     all_agents: &[AgentInfo],
+    tts_state: &LiveTtsState,
 ) -> Result<Vec<crate::db::DebateRound>, String> {
     if cancel_flag.load(Ordering::Relaxed) {
         return Err("Debate cancelled".to_string());
@@ -213,7 +352,12 @@ async fn run_sequential_round(
             return Err("Debate cancelled".to_string());
         }
 
-        let system_prompt = agents::read_agent_prompt(app_data_dir, &agent.key);
+        let base_system_prompt = agents::read_agent_prompt(app_data_dir, &agent.key);
+        let system_prompt = format!(
+            "{}\n\n{}",
+            base_system_prompt,
+            agents::debate_spoken_style_overlay()
+        );
         let agent_model = agent_models.get(&agent.key).filter(|m| !m.is_empty()).map(|m| m.as_str()).unwrap_or(default_model);
         let result = call_agent_with_retry(
             api_key, agent_model,
@@ -223,6 +367,7 @@ async fn run_sequential_round(
 
         match result {
             Ok(text) => {
+                let normalized_text = normalize_spoken_debate_output(&text);
                 // Save to DB
                 let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
                 let round = {
@@ -232,7 +377,7 @@ async fn run_sequential_round(
                         round_number,
                         exchange_number,
                         &agent.key,
-                        &text,
+                        &normalized_text,
                     ).map_err(|e| e.to_string())?
                 };
 
@@ -242,8 +387,11 @@ async fn run_sequential_round(
                     "round_number": round_number,
                     "exchange_number": exchange_number,
                     "agent": agent.key,
-                    "content": text,
+                    "content": normalized_text,
                 }));
+
+                // Spawn live TTS for this segment
+                spawn_segment_tts(tts_state, app_handle, decision_id, &round);
 
                 new_rounds.push(round);
             }
@@ -332,6 +480,21 @@ pub async fn run_debate(
     // All agents for transcript formatting (debaters + moderator)
     let all_agents: Vec<AgentInfo> = registry.clone();
 
+    // Set up live TTS state
+    let tts_config = config::load_config(&app_data_dir);
+    let has_tts = match tts_config.tts_provider.as_str() {
+        "openai" => !tts_config.openrouter_api_key.is_empty(),
+        _ => !tts_config.elevenlabs_api_key.is_empty(),
+    };
+    let tts_state = LiveTtsState {
+        enabled: has_tts,
+        config: tts_config,
+        registry: registry.clone(),
+        app_data_dir: app_data_dir.clone(),
+        segment_counter: Arc::new(AtomicUsize::new(0)),
+        handles: Arc::new(Mutex::new(Vec::new())),
+    };
+
     let mut all_rounds: Vec<crate::db::DebateRound> = Vec::new();
 
     // 4. Round 1: Opening Positions
@@ -339,7 +502,7 @@ pub async fn run_debate(
         &api_key, &model, &agent_models,
         &brief, &all_rounds, 1, 1,
         &app_handle, &decision_id, &cancel_flag, &app_data_dir,
-        &debaters, &all_agents,
+        &debaters, &all_agents, &tts_state,
     ).await?;
     all_rounds.extend(round1);
 
@@ -354,7 +517,7 @@ pub async fn run_debate(
             &api_key, &model, &agent_models,
             &brief, &all_rounds, 2, 1,
             &app_handle, &decision_id, &cancel_flag, &app_data_dir,
-            &debaters, &all_agents,
+            &debaters, &all_agents, &tts_state,
         ).await?;
         all_rounds.extend(r2e1);
 
@@ -366,7 +529,7 @@ pub async fn run_debate(
             &api_key, &model, &agent_models,
             &brief, &all_rounds, 2, 2,
             &app_handle, &decision_id, &cancel_flag, &app_data_dir,
-            &debaters, &all_agents,
+            &debaters, &all_agents, &tts_state,
         ).await?;
         all_rounds.extend(r2e2);
 
@@ -378,7 +541,7 @@ pub async fn run_debate(
             &api_key, &model, &agent_models,
             &brief, &all_rounds, 3, 1,
             &app_handle, &decision_id, &cancel_flag, &app_data_dir,
-            &debaters, &all_agents,
+            &debaters, &all_agents, &tts_state,
         ).await?;
         all_rounds.extend(round3);
     }
@@ -416,6 +579,20 @@ pub async fn run_debate(
         "content": moderator_response,
     }));
 
+    // Spawn live TTS for moderator segment
+    {
+        let moderator_round = crate::db::DebateRound {
+            id: String::new(),
+            decision_id: decision_id.clone(),
+            round_number: 99,
+            exchange_number: 1,
+            agent: "moderator".to_string(),
+            content: moderator_response.clone(),
+            created_at: String::new(),
+        };
+        spawn_segment_tts(&tts_state, &app_handle, &decision_id, &moderator_round);
+    }
+
     // 9. Parse moderator output and update decision summary
     update_summary_from_debate(&app_handle, &decision_id, &all_rounds, &moderator_response, &debaters)?;
 
@@ -428,6 +605,48 @@ pub async fn run_debate(
     }
 
     let _ = app_handle.emit("debate-complete", json!({ "decision_id": decision_id }));
+
+    // Await all live TTS tasks and build the manifest
+    if has_tts {
+        let handles_to_await = {
+            let mut h = tts_state.handles.lock().map_err(|e| e.to_string())?;
+            std::mem::take(&mut *h)
+        };
+
+        let mut completed_segments: Vec<tts::AudioSegment> = Vec::new();
+        for handle in handles_to_await {
+            if let Ok(Some(segment)) = handle.await {
+                completed_segments.push(segment);
+            }
+        }
+
+        if !completed_segments.is_empty() {
+            let manifest = tts::build_manifest_from_segments(&decision_id, completed_segments);
+            let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
+            let audio_dir_path = app_data_dir.join("debates").join(&decision_id);
+            let audio_dir_str = audio_dir_path.to_string_lossy().to_string();
+
+            // Save manifest.json to disk
+            let _ = std::fs::write(audio_dir_path.join("manifest.json"), &manifest_json);
+
+            // Save to DB
+            let state: tauri::State<'_, Mutex<AppState>> = app_handle.state();
+            if let Ok(sg) = state.lock() {
+                let _ = sg.db.save_debate_audio(
+                    &decision_id,
+                    &manifest_json,
+                    manifest.total_duration_ms as i64,
+                    &audio_dir_str,
+                );
+            }
+
+            // Emit final manifest for AudioPlayer replay
+            let _ = app_handle.emit("audio-generation-complete", json!({
+                "decision_id": decision_id,
+                "manifest": manifest,
+            }));
+        }
+    }
 
     Ok(())
 }
@@ -662,5 +881,22 @@ Third
     fn unit_parse_moderator_recommendation_returns_none_without_recommendation_fields() {
         let no_recommendation = "## Where the Committee Agreed\n- Point A";
         assert!(parse_moderator_recommendation("", no_recommendation).is_none());
+    }
+
+    #[test]
+    fn unit_normalize_spoken_debate_output_removes_rigid_markdown_format() {
+        let raw = r#"
+## Opening
+- **Position**: Go with Option B.
+- **Key argument**: Better upside over 5 years.
+1. **Concern**: Burnout risk is still real.
+"#;
+        let cleaned = normalize_spoken_debate_output(raw);
+        assert!(!cleaned.contains("##"));
+        assert!(!cleaned.contains("**"));
+        assert!(!cleaned.contains("- "));
+        assert!(cleaned.contains("Go with Option B."));
+        assert!(cleaned.contains("Better upside over 5 years."));
+        assert!(cleaned.contains("Burnout risk is still real."));
     }
 }

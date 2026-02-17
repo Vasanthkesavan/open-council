@@ -1,14 +1,58 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, XCircle } from "lucide-react";
+import { appDataDir } from "@tauri-apps/api/path";
+import { ArrowLeft, XCircle, Volume2, Pause, Play, X, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import DebateAgentMessage from "./DebateAgentMessage";
 import DebateRoundHeader from "./DebateRoundHeader";
 import DebateProgressBar from "./DebateProgressBar";
 import ModeratorVerdict from "./ModeratorVerdict";
+import AudioPlayer from "./AudioPlayer";
+import AudioGenerationProgress from "./AudioGenerationProgress";
+import AudioWaveform from "./AudioWaveform";
+import { useLiveAudioQueue } from "@/hooks/useLiveAudioQueue";
 import type { AgentMeta } from "@/lib/agentColors";
+import { resolveAgentConfig } from "@/lib/agentColors";
+
+interface AudioSegment {
+  index: number;
+  agent: string;
+  round: number;
+  exchange: number;
+  text: string;
+  audio_file: string;
+  duration_ms: number;
+  start_ms: number;
+}
+
+interface AudioManifest {
+  decision_id: string;
+  segments: AudioSegment[];
+  total_duration_ms: number;
+}
+
+interface DebateAudioRecord {
+  id: string;
+  decision_id: string;
+  manifest_json: string;
+  total_duration_ms: number;
+  generated_at: string;
+  audio_dir: string;
+}
+
+interface AudioProgressEvent {
+  decision_id: string;
+  completed: number;
+  total: number;
+  current_agent: string;
+}
+
+interface AudioCompleteEvent {
+  decision_id: string;
+  manifest: AudioManifest;
+}
 
 interface DebateRoundData {
   id: string;
@@ -99,14 +143,43 @@ export default function DebateView({
   );
   const [registry, setRegistry] = useState<AgentMeta[]>([]);
 
+  // Audio playback state
+  const [audioManifest, setAudioManifest] = useState<AudioManifest | null>(null);
+  const [audioDir, setAudioDir] = useState<string>("");
+  const [showPlayer, setShowPlayer] = useState(false);
+  const [audioGenerating, setAudioGenerating] = useState(false);
+  const [audioProgress, setAudioProgress] = useState({ completed: 0, total: 0, currentAgent: "" });
+
+  // Live audio queue — plays TTS segments as they arrive during debate
+  const liveAudio = useLiveAudioQueue(decisionId, debateRunning);
+
   // Total rounds: quick mode = 2 (round 1 + moderator), full = 5 (r1, r2e1, r2e2, r3, moderator)
   const totalRounds = quickMode ? 2 : 5;
 
-  // Load existing debate data and agent registry on mount
+  // Load existing debate data, agent registry, and audio on mount
   useEffect(() => {
     loadDebate();
     invoke<AgentMeta[]>("get_agent_registry").then(setRegistry).catch(console.error);
+    loadExistingAudio();
   }, [decisionId]);
+
+  async function loadExistingAudio() {
+    try {
+      const dataDir = await appDataDir();
+      setAudioDir(`${dataDir}/debates/${decisionId}`);
+
+      const record = await invoke<DebateAudioRecord | null>("get_debate_audio", { decisionId });
+      if (record) {
+        const manifest: AudioManifest = JSON.parse(record.manifest_json);
+        setAudioManifest(manifest);
+        if (record.audio_dir.includes("/") || record.audio_dir.includes("\\")) {
+          setAudioDir(record.audio_dir);
+        }
+      }
+    } catch {
+      // No audio yet — that's fine
+    }
+  }
 
   // Listen for debate events
   useEffect(() => {
@@ -198,12 +271,57 @@ export default function DebateView({
       }
     );
 
+    // Audio generation events
+    const unlistenAudioProgress = listen<AudioProgressEvent>(
+      "audio-generation-progress",
+      (event) => {
+        if (event.payload.decision_id !== decisionId) return;
+        const { completed, total, current_agent } = event.payload;
+        if (completed < total) {
+          setAudioGenerating(true);
+          setAudioProgress({ completed, total, currentAgent: current_agent });
+        } else {
+          setAudioGenerating(false);
+        }
+      }
+    );
+
+    const unlistenAudioComplete = listen<AudioCompleteEvent>(
+      "audio-generation-complete",
+      async (event) => {
+        if (event.payload.decision_id !== decisionId) return;
+        setAudioGenerating(false);
+        setAudioManifest(event.payload.manifest);
+        // Load audio dir from the saved record
+        try {
+          const record = await invoke<DebateAudioRecord | null>("get_debate_audio", { decisionId });
+          if (record && (record.audio_dir.includes("/") || record.audio_dir.includes("\\"))) {
+            setAudioDir(record.audio_dir);
+          }
+        } catch {
+          // Use default path
+        }
+        setShowPlayer(true);
+      }
+    );
+
+    const unlistenAudioError = listen<{ decision_id: string; error: string }>(
+      "audio-generation-error",
+      (event) => {
+        if (event.payload.decision_id !== decisionId) return;
+        setAudioGenerating(false);
+      }
+    );
+
     return () => {
       unlistenToken.then((fn) => fn());
       unlistenAgentResponse.then((fn) => fn());
       unlistenRoundComplete.then((fn) => fn());
       unlistenComplete.then((fn) => fn());
       unlistenError.then((fn) => fn());
+      unlistenAudioProgress.then((fn) => fn());
+      unlistenAudioComplete.then((fn) => fn());
+      unlistenAudioError.then((fn) => fn());
     };
   }, [decisionId, onDebateComplete]);
 
@@ -378,12 +496,119 @@ export default function DebateView({
         </div>
       </ScrollArea>
 
+      {/* Live audio indicator — plays TTS as debate streams */}
+      {debateRunning && liveAudio.segmentsReady > 0 && (
+        <div className="border-t border-border px-4 py-2 flex items-center gap-3">
+          {liveAudio.currentAgent ? (
+            <>
+              {(() => {
+                const config = resolveAgentConfig(liveAudio.currentAgent, registry);
+                const meta = registry.find((a) => a.key === liveAudio.currentAgent);
+                return (
+                  <>
+                    <span className="text-sm">{config.emoji}</span>
+                    {meta && (
+                      <AudioWaveform
+                        isActive={liveAudio.isPlaying}
+                        color={meta.color}
+                        size="sm"
+                      />
+                    )}
+                    <span className={`text-xs font-medium ${config.color}`}>
+                      {config.label}
+                    </span>
+                  </>
+                );
+              })()}
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Generating audio...
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={liveAudio.togglePause}
+              className="h-7 w-7 p-0"
+            >
+              {liveAudio.isPlaying ? (
+                <Pause className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={liveAudio.stop}
+              className="h-7 w-7 p-0"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Audio generation progress (for manual re-generation) */}
+      {audioGenerating && (
+        <div className="px-4 py-2 border-t border-border">
+          <AudioGenerationProgress
+            completed={audioProgress.completed}
+            total={audioProgress.total}
+            currentAgent={audioProgress.currentAgent}
+            registry={registry}
+          />
+        </div>
+      )}
+
+      {/* Audio player (for post-debate replay) */}
+      {showPlayer && audioManifest && audioDir && (
+        <AudioPlayer
+          manifest={audioManifest}
+          audioDir={audioDir}
+          registry={registry}
+          onClose={() => setShowPlayer(false)}
+        />
+      )}
+
       {/* Bottom action bar */}
       <div className="border-t border-border px-4 py-2 flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onBackToChat}>
           <ArrowLeft className="h-3.5 w-3.5 mr-1.5" />
           Back to Chat
         </Button>
+        {!debateRunning && audioManifest && !showPlayer && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowPlayer(true)}
+            className="ml-auto"
+          >
+            <Volume2 className="h-3.5 w-3.5 mr-1.5" />
+            Listen to Debate
+          </Button>
+        )}
+        {!debateRunning && !audioManifest && !audioGenerating && rounds.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                setAudioGenerating(true);
+                await invoke("generate_debate_audio", { decisionId });
+              } catch (err) {
+                console.error("Failed to generate audio:", err);
+                setAudioGenerating(false);
+              }
+            }}
+            className="ml-auto"
+          >
+            <Mic className="h-3.5 w-3.5 mr-1.5" />
+            Generate Audio
+          </Button>
+        )}
         {debateRunning && (
           <Button
             variant="ghost"

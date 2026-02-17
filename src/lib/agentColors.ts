@@ -6,6 +6,7 @@ export interface AgentMeta {
   role: string;
   builtin: boolean;
   sort_order: number;
+  voice_gender: string; // "male" | "female"
 }
 
 export const COLOR_MAP: Record<

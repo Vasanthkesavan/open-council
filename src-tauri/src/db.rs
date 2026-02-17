@@ -52,11 +52,26 @@ pub struct DebateRound {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DebateAudio {
+    pub id: String,
+    pub decision_id: String,
+    pub manifest_json: String,
+    pub total_duration_ms: i64,
+    pub generated_at: String,
+    pub audio_dir: String,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
 
 impl Database {
+    fn debate_audio_fields_swapped(audio: &DebateAudio) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&audio.audio_dir).is_ok()
+            && (audio.generated_at.contains('/') || audio.generated_at.contains('\\'))
+    }
+
     pub fn new(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         conn.execute_batch("
@@ -102,6 +117,15 @@ impl Database {
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (decision_id) REFERENCES decisions(id)
             );
+            CREATE TABLE IF NOT EXISTS debate_audio (
+                id TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                total_duration_ms INTEGER NOT NULL,
+                generated_at TEXT NOT NULL,
+                audio_dir TEXT NOT NULL,
+                FOREIGN KEY (decision_id) REFERENCES decisions(id)
+            );
         ")?;
 
         // Migration: add type column if missing (existing databases)
@@ -127,6 +151,17 @@ impl Database {
                 ALTER TABLE decisions ADD COLUMN debate_completed_at TEXT;
             ")?;
         }
+
+        // Migration: repair rows written with generated_at/audio_dir swapped.
+        conn.execute_batch(
+            r#"
+            UPDATE debate_audio
+            SET generated_at = audio_dir,
+                audio_dir = generated_at
+            WHERE audio_dir GLOB '????-??-??T*'
+              AND (generated_at LIKE '%/%' OR generated_at LIKE '%\%');
+            "#,
+        )?;
 
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -226,6 +261,7 @@ impl Database {
 
     pub fn delete_conversation(&self, conversation_id: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM debate_audio WHERE decision_id IN (SELECT id FROM decisions WHERE conversation_id = ?1)", params![conversation_id])?;
         conn.execute("DELETE FROM debate_rounds WHERE decision_id IN (SELECT id FROM decisions WHERE conversation_id = ?1)", params![conversation_id])?;
         conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![conversation_id])?;
         conn.execute("DELETE FROM decisions WHERE conversation_id = ?1", params![conversation_id])?;
@@ -467,6 +503,71 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // ── Debate Audio methods ──
+
+    pub fn save_debate_audio(
+        &self,
+        decision_id: &str,
+        manifest_json: &str,
+        total_duration_ms: i64,
+        audio_dir: &str,
+    ) -> Result<DebateAudio, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        // Delete any existing audio for this decision
+        conn.execute("DELETE FROM debate_audio WHERE decision_id = ?1", params![decision_id])?;
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO debate_audio (id, decision_id, manifest_json, total_duration_ms, generated_at, audio_dir) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, decision_id, manifest_json, total_duration_ms, now, audio_dir],
+        )?;
+        Ok(DebateAudio {
+            id,
+            decision_id: decision_id.to_string(),
+            manifest_json: manifest_json.to_string(),
+            total_duration_ms,
+            generated_at: now,
+            audio_dir: audio_dir.to_string(),
+        })
+    }
+
+    pub fn get_debate_audio(&self, decision_id: &str) -> Result<Option<DebateAudio>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, decision_id, manifest_json, total_duration_ms, generated_at, audio_dir FROM debate_audio WHERE decision_id = ?1"
+        )?;
+        let mut rows = stmt.query_map(params![decision_id], |row| {
+            Ok(DebateAudio {
+                id: row.get(0)?,
+                decision_id: row.get(1)?,
+                manifest_json: row.get(2)?,
+                total_duration_ms: row.get(3)?,
+                generated_at: row.get(4)?,
+                audio_dir: row.get(5)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => {
+                let mut audio = row?;
+                if Self::debate_audio_fields_swapped(&audio) {
+                    std::mem::swap(&mut audio.generated_at, &mut audio.audio_dir);
+                    conn.execute(
+                        "UPDATE debate_audio SET generated_at = ?1, audio_dir = ?2 WHERE id = ?3",
+                        params![&audio.generated_at, &audio.audio_dir, &audio.id],
+                    )?;
+                }
+                Ok(Some(audio))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_debate_audio(&self, decision_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM debate_audio WHERE decision_id = ?1", params![decision_id])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -608,5 +709,59 @@ mod tests {
         assert_eq!(rounds.len(), 2);
         assert_eq!(rounds[0].round_number, 1);
         assert_eq!(rounds[1].round_number, 99);
+    }
+
+    #[test]
+    fn integration_debate_audio_persists_audio_dir_and_repairs_swapped_values() {
+        let db = new_test_db();
+        let conversation = db
+            .create_conversation_with_type("Audio test", "decision")
+            .expect("decision conversation should be created");
+        let decision = db
+            .create_decision(&conversation.id, "Audio test decision")
+            .expect("decision should be created");
+
+        let audio_dir = "/tmp/debates/audio-test";
+        let manifest_json = r#"{"decision_id":"audio-test","segments":[],"total_duration_ms":0}"#;
+
+        db.save_debate_audio(&decision.id, manifest_json, 0, audio_dir)
+            .expect("debate audio should save");
+
+        let saved = db
+            .get_debate_audio(&decision.id)
+            .expect("debate audio query should succeed")
+            .expect("debate audio should exist");
+        assert_eq!(saved.audio_dir, audio_dir);
+        assert!(chrono::DateTime::parse_from_rfc3339(&saved.generated_at).is_ok());
+
+        // Simulate legacy bad row with generated_at/audio_dir swapped.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE debate_audio SET generated_at = ?1, audio_dir = ?2 WHERE id = ?3",
+                params![saved.audio_dir.clone(), saved.generated_at.clone(), saved.id.clone()],
+            )
+            .expect("swap update should succeed");
+        }
+
+        let repaired = db
+            .get_debate_audio(&decision.id)
+            .expect("debate audio query should succeed")
+            .expect("debate audio should exist");
+        assert_eq!(repaired.audio_dir, audio_dir);
+        assert!(chrono::DateTime::parse_from_rfc3339(&repaired.generated_at).is_ok());
+
+        // Ensure repair was persisted to DB.
+        let (generated_at, stored_audio_dir): (String, String) = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT generated_at, audio_dir FROM debate_audio WHERE id = ?1",
+                params![repaired.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("raw debate_audio row should load")
+        };
+        assert_eq!(stored_audio_dir, audio_dir);
+        assert!(chrono::DateTime::parse_from_rfc3339(&generated_at).is_ok());
     }
 }

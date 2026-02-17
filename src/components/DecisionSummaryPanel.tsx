@@ -135,7 +135,7 @@ export default function DecisionSummaryPanel({
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4">
         {!summary && (
           <div className="h-full flex items-center justify-center p-6">
             <div className="text-center text-muted-foreground">
@@ -179,27 +179,33 @@ export default function DecisionSummaryPanel({
                   Key Variables
                 </h3>
                 <div className="space-y-1.5">
-                  {summary.variables.map((v, i) => (
-                    <div
-                      key={i}
-                      className="flex items-start justify-between gap-2 text-sm"
-                    >
-                      <div className="min-w-0">
-                        <span className="font-medium">{v.label}:</span>{" "}
-                        <span className="text-muted-foreground">{v.value}</span>
+                  {summary.variables.map((v, i) => {
+                    // Normalize impact to high/medium/low
+                    const impactKey = v.impact && ["high", "medium", "low"].includes(v.impact)
+                      ? v.impact
+                      : null;
+                    return (
+                      <div
+                        key={i}
+                        className="flex items-start justify-between gap-2 text-sm"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="font-medium">{v.label}:</span>{" "}
+                          <span className="text-muted-foreground">{v.value}</span>
+                        </div>
+                        {impactKey && (
+                          <span
+                            className={cn(
+                              "text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0",
+                              IMPACT_COLORS[impactKey]
+                            )}
+                          >
+                            {impactKey}
+                          </span>
+                        )}
                       </div>
-                      {v.impact && (
-                        <span
-                          className={cn(
-                            "text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0",
-                            IMPACT_COLORS[v.impact] || IMPACT_COLORS.low
-                          )}
-                        >
-                          {v.impact}
-                        </span>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             )}

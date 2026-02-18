@@ -526,10 +526,11 @@ pub fn format_participant_names(debaters: &[AgentInfo]) -> String {
 /// This ensures conversational spoken output even if old prompt files still
 /// contain rigid markdown/bullet instructions from earlier versions.
 pub fn debate_spoken_style_overlay() -> &'static str {
-    r#"Critical output format for this turn:
+    r#"Critical output format for this turn (these rules override any earlier formatting instructions):
 - Speak like you're in a live conversation with the other committee members.
 - Do NOT output markdown formatting, bullets, numbered lists, or section headers.
 - Use direct spoken prose with short natural sentences and contractions.
+- Sound human: vary sentence length and use natural transitions.
 - Reference other members by name naturally when you react to them.
 - Keep it concise and high-signal."#
 }

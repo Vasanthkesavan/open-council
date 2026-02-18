@@ -29,21 +29,16 @@ fn normalize_spoken_debate_output(text: &str) -> String {
             continue;
         }
 
-        // Remove markdown heading prefixes.
         while let Some(rest) = line.strip_prefix('#') {
             line = rest.trim_start();
         }
 
-        // Remove common list markers.
         if let Some(rest) = line.strip_prefix("- ") {
             line = rest.trim_start();
         } else if let Some(rest) = line.strip_prefix("* ") {
             line = rest.trim_start();
-        } else if let Some(rest) = line.strip_prefix("• ") {
-            line = rest.trim_start();
         }
 
-        // Remove numbered-list prefixes like "1. ".
         if let Some(dot_pos) = line.find(". ") {
             if line[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
                 line = line[dot_pos + 2..].trim_start();
@@ -68,11 +63,27 @@ fn normalize_spoken_debate_output(text: &str) -> String {
         }
     }
 
-    let merged = parts.join(" ");
+    let merged = parts
+        .into_iter()
+        .map(|mut part| {
+            let ends_with_terminal = part
+                .chars()
+                .last()
+                .map(|c| matches!(c, '.' | '!' | '?' | ':'))
+                .unwrap_or(false);
+            if !ends_with_terminal {
+                part.push('.');
+            }
+            part
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
     let compact = merged
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+        .replace(". .", ".")
         .replace(" .", ".")
         .replace(" ,", ",")
         .replace(" ;", ";")
@@ -127,6 +138,7 @@ fn spawn_segment_tts(
                     "agent": segment.agent,
                     "round_number": segment.round,
                     "exchange_number": segment.exchange,
+                    "text": segment.text,
                     "audio_file": segment.audio_file,
                     "duration_ms": segment.duration_ms,
                     "audio_dir": audio_dir.to_string_lossy().to_string(),
@@ -336,20 +348,42 @@ async fn run_sequential_round(
         return Err("Debate cancelled".to_string());
     }
 
-    let transcript = format_transcript(existing_rounds, all_agents);
-
-    let user_prompt = match round_number {
-        1 => agents::round1_prompt(brief),
-        2 => agents::round2_prompt(brief, &transcript, exchange_number),
-        3 => agents::round3_prompt(brief, &transcript),
-        _ => return Err("Invalid round number".to_string()),
-    };
-
     let mut new_rounds = Vec::new();
+    let mut speaker_order: Vec<&AgentInfo> = debaters.iter().collect();
+    if speaker_order.len() > 1 {
+        let rotation_seed = (round_number.max(1) - 1 + exchange_number.max(1) - 1) as usize;
+        let speaker_count = speaker_order.len();
+        speaker_order.rotate_left(rotation_seed % speaker_count);
+    }
 
-    for agent in debaters {
+    for agent in speaker_order {
         if cancel_flag.load(Ordering::Relaxed) {
             return Err("Debate cancelled".to_string());
+        }
+
+        // Build transcript dynamically so later speakers can react to points
+        // made earlier in the same exchange.
+        let mut transcript_rounds = existing_rounds.to_vec();
+        transcript_rounds.extend(new_rounds.iter().cloned());
+        let transcript = format_transcript(&transcript_rounds, all_agents);
+        let mut user_prompt = match round_number {
+            1 => agents::round1_prompt(brief),
+            2 => agents::round2_prompt(brief, &transcript, exchange_number),
+            3 => agents::round3_prompt(brief, &transcript),
+            _ => return Err("Invalid round number".to_string()),
+        };
+        if round_number == 2 {
+            if let Some(last_round) = new_rounds.last() {
+                let prior_speaker = all_agents
+                    .iter()
+                    .find(|a| a.key == last_round.agent)
+                    .map(|a| a.label.as_str())
+                    .unwrap_or(last_round.agent.as_str());
+                user_prompt.push_str(&format!(
+                    "\n\nYou are speaking immediately after {}. In your first sentence, react directly to their main point.",
+                    prior_speaker
+                ));
+            }
         }
 
         let base_system_prompt = agents::read_agent_prompt(app_data_dir, &agent.key);
@@ -900,3 +934,4 @@ Third
         assert!(cleaned.contains("Burnout risk is still real."));
     }
 }
+

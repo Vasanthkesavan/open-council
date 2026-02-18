@@ -8,15 +8,26 @@ interface SegmentAudioReadyEvent {
   agent: string;
   round_number: number;
   exchange_number: number;
+  text?: string;
   audio_file: string;
   duration_ms: number;
   audio_dir: string;
+}
+
+export interface LiveAudioSegment {
+  index: number;
+  agent: string;
+  roundNumber: number;
+  exchangeNumber: number;
+  durationMs: number;
+  text: string;
 }
 
 export interface LiveAudioState {
   isPlaying: boolean;
   currentSegmentIndex: number;
   currentAgent: string | null;
+  currentSegment: LiveAudioSegment | null;
   segmentsReady: number;
   togglePause: () => void;
   stop: () => void;
@@ -34,6 +45,7 @@ export function useLiveAudioQueue(
 
   const [currentSegmentIndex, setCurrentSegmentIndex] = useState(-1);
   const [currentAgent, setCurrentAgent] = useState<string | null>(null);
+  const [currentSegment, setCurrentSegment] = useState<LiveAudioSegment | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [segmentsReady, setSegmentsReady] = useState(0);
 
@@ -73,6 +85,14 @@ export function useLiveAudioQueue(
     setIsPlaying(true);
     setCurrentSegmentIndex(idx);
     setCurrentAgent(segment.agent);
+    setCurrentSegment({
+      index: idx,
+      agent: segment.agent,
+      roundNumber: segment.round_number,
+      exchangeNumber: segment.exchange_number,
+      durationMs: segment.duration_ms,
+      text: segment.text || "",
+    });
   }, []);
 
   // When audio ends, advance to next segment
@@ -125,6 +145,7 @@ export function useLiveAudioQueue(
       setIsPlaying(false);
       setCurrentSegmentIndex(-1);
       setCurrentAgent(null);
+      setCurrentSegment(null);
       setSegmentsReady(0);
     }
   }, [isDebating]);
@@ -161,12 +182,14 @@ export function useLiveAudioQueue(
     userPaused.current = true;
     setIsPlaying(false);
     setCurrentAgent(null);
+    setCurrentSegment(null);
   }, []);
 
   return {
     isPlaying,
     currentSegmentIndex,
     currentAgent,
+    currentSegment,
     segmentsReady,
     togglePause,
     stop,

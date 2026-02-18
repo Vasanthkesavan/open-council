@@ -80,11 +80,21 @@ interface AgentTokenEvent {
   token: string;
 }
 
+interface PendingResponse {
+  round_number: number;
+  exchange_number: number;
+  agent: string;
+  content: string;
+  received_at: number;
+}
+
 interface RoundCompleteEvent {
   decision_id: string;
   round_number: number;
   exchange_number: number;
 }
+
+const SYNC_TRANSCRIPT_WITH_LIVE_AUDIO = true;
 
 interface DebateViewProps {
   decisionId: string;
@@ -137,10 +147,16 @@ export default function DebateView({
   const [error, setError] = useState<string | null>(null);
   const [debateRunning, setDebateRunning] = useState(isDebating);
   const scrollEndRef = useRef<HTMLDivElement>(null);
-  // Track streaming tokens per agent: key = "round-exchange-agent"
+  // Streaming text displayed in the UI (either token stream or audio-synced reveal)
   const [streamingMessages, setStreamingMessages] = useState<Record<string, { round_number: number; exchange_number: number; agent: string; content: string }>>(
     {}
   );
+  const [pendingResponses, setPendingResponses] = useState<Record<string, PendingResponse>>({});
+  const pendingResponsesRef = useRef<Record<string, PendingResponse>>({});
+  const revealTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveAudioPlayingRef = useRef(false);
+  const lastRevealedSegmentRef = useRef(-1);
+  const sawLiveAudioRef = useRef(false);
   const [registry, setRegistry] = useState<AgentMeta[]>([]);
 
   // Audio playback state
@@ -156,8 +172,25 @@ export default function DebateView({
   // Total rounds: quick mode = 2 (round 1 + moderator), full = 5 (r1, r2e1, r2e2, r3, moderator)
   const totalRounds = quickMode ? 2 : 5;
 
+  useEffect(() => {
+    liveAudioPlayingRef.current = liveAudio.isPlaying;
+  }, [liveAudio.isPlaying]);
+
+  useEffect(() => {
+    pendingResponsesRef.current = pendingResponses;
+  }, [pendingResponses]);
+
   // Load existing debate data, agent registry, and audio on mount
   useEffect(() => {
+    if (revealTimerRef.current) {
+      clearInterval(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+    lastRevealedSegmentRef.current = -1;
+    sawLiveAudioRef.current = false;
+    pendingResponsesRef.current = {};
+    setPendingResponses({});
+    setStreamingMessages({});
     loadDebate();
     invoke<AgentMeta[]>("get_agent_registry").then(setRegistry).catch(console.error);
     loadExistingAudio();
@@ -180,29 +213,30 @@ export default function DebateView({
       // No audio yet — that's fine
     }
   }
-
   // Listen for debate events
   useEffect(() => {
-    // Listen for streaming tokens — progressively build agent messages
+    // Listen for streaming tokens
     const unlistenToken = listen<AgentTokenEvent>(
       "debate-agent-token",
       (event) => {
         if (event.payload.decision_id !== decisionId) return;
         const { round_number, exchange_number, agent, token } = event.payload;
-        const key = `${round_number}-${exchange_number}-${agent}`;
 
-        setStreamingMessages((prev) => {
-          const existing = prev[key];
-          return {
-            ...prev,
-            [key]: {
-              round_number,
-              exchange_number,
-              agent,
-              content: (existing?.content || "") + token,
-            },
-          };
-        });
+        if (!SYNC_TRANSCRIPT_WITH_LIVE_AUDIO) {
+          const key = `${round_number}-${exchange_number}-${agent}`;
+          setStreamingMessages((prev) => {
+            const existing = prev[key];
+            return {
+              ...prev,
+              [key]: {
+                round_number,
+                exchange_number,
+                agent,
+                content: (existing?.content || "") + token,
+              },
+            };
+          });
+        }
 
         // Track current round for progress
         if (round_number !== 99) {
@@ -213,7 +247,7 @@ export default function DebateView({
       }
     );
 
-    // When a complete agent response arrives, move from streaming to finalized
+    // When a complete agent response arrives
     const unlistenAgentResponse = listen<AgentResponseEvent>(
       "debate-agent-response",
       (event) => {
@@ -221,26 +255,52 @@ export default function DebateView({
         const { round_number, exchange_number, agent, content } = event.payload;
         const streamKey = `${round_number}-${exchange_number}-${agent}`;
 
-        // Remove from streaming messages
-        setStreamingMessages((prev) => {
-          const next = { ...prev };
-          delete next[streamKey];
-          return next;
-        });
+        if (round_number !== 99) {
+          setCurrentRound(round_number);
+        } else {
+          setCurrentRound(99);
+        }
 
-        // Add to finalized rounds
-        setRounds((prev) => [
-          ...prev,
-          {
-            id: `${round_number}-${exchange_number}-${agent}-${Date.now()}`,
-            decision_id: decisionId,
-            round_number,
-            exchange_number,
-            agent,
-            content,
-            created_at: new Date().toISOString(),
-          },
-        ]);
+        if (SYNC_TRANSCRIPT_WITH_LIVE_AUDIO) {
+          setStreamingMessages((prev) => {
+            const next = { ...prev };
+            delete next[streamKey];
+            return next;
+          });
+          setPendingResponses((prev) => {
+            const next = {
+              ...prev,
+              [streamKey]: {
+                round_number,
+                exchange_number,
+                agent,
+                content,
+                received_at: Date.now(),
+              },
+            };
+            pendingResponsesRef.current = next;
+            return next;
+          });
+        } else {
+          setStreamingMessages((prev) => {
+            const next = { ...prev };
+            delete next[streamKey];
+            return next;
+          });
+
+          setRounds((prev) => [
+            ...prev,
+            {
+              id: `${round_number}-${exchange_number}-${agent}-${Date.now()}`,
+              decision_id: decisionId,
+              round_number,
+              exchange_number,
+              agent,
+              content,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        }
       }
     );
 
@@ -324,6 +384,160 @@ export default function DebateView({
       unlistenAudioError.then((fn) => fn());
     };
   }, [decisionId, onDebateComplete]);
+
+  useEffect(() => {
+    if (liveAudio.segmentsReady > 0) {
+      sawLiveAudioRef.current = true;
+    }
+  }, [liveAudio.segmentsReady]);
+
+  // Reveal transcript only when the corresponding audio segment starts playing.
+  useEffect(() => {
+    if (!SYNC_TRANSCRIPT_WITH_LIVE_AUDIO) return;
+    const segment = liveAudio.currentSegment;
+    if (!segment) return;
+    if (lastRevealedSegmentRef.current === segment.index) return;
+    lastRevealedSegmentRef.current = segment.index;
+
+    if (segment.roundNumber !== 99) {
+      setCurrentRound(segment.roundNumber);
+    } else {
+      setCurrentRound(99);
+    }
+
+    const key = `${segment.roundNumber}-${segment.exchangeNumber}-${segment.agent}`;
+    const pending = pendingResponsesRef.current[key];
+    const fullText = pending?.content || segment.text || "";
+    if (!fullText) return;
+
+    if (pending) {
+      const nextPending = { ...pendingResponsesRef.current };
+      delete nextPending[key];
+      pendingResponsesRef.current = nextPending;
+      setPendingResponses(nextPending);
+    }
+
+    if (revealTimerRef.current) {
+      clearInterval(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+
+    const durationMs = Math.max(900, segment.durationMs || 0);
+    const tickMs = 35;
+    const totalChars = fullText.length;
+    const charsPerTick = Math.max(1, Math.ceil(totalChars / (durationMs / tickMs)));
+    let shownChars = 0;
+
+    setStreamingMessages((prev) => ({
+      ...prev,
+      [key]: {
+        round_number: segment.roundNumber,
+        exchange_number: segment.exchangeNumber,
+        agent: segment.agent,
+        content: "",
+      },
+    }));
+
+    revealTimerRef.current = setInterval(() => {
+      if (!liveAudioPlayingRef.current) return;
+
+      shownChars = Math.min(totalChars, shownChars + charsPerTick);
+      const partial = fullText.slice(0, shownChars);
+
+      setStreamingMessages((prev) => ({
+        ...prev,
+        [key]: {
+          round_number: segment.roundNumber,
+          exchange_number: segment.exchangeNumber,
+          agent: segment.agent,
+          content: partial,
+        },
+      }));
+
+      if (shownChars >= totalChars) {
+        if (revealTimerRef.current) {
+          clearInterval(revealTimerRef.current);
+          revealTimerRef.current = null;
+        }
+        setStreamingMessages((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        setRounds((prev) => [
+          ...prev,
+          {
+            id: `${segment.roundNumber}-${segment.exchangeNumber}-${segment.agent}-${Date.now()}`,
+            decision_id: decisionId,
+            round_number: segment.roundNumber,
+            exchange_number: segment.exchangeNumber,
+            agent: segment.agent,
+            content: fullText,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      }
+    }, tickMs);
+  }, [decisionId, liveAudio.currentSegmentIndex, liveAudio.currentSegment]);
+
+  // Fallback: if debate ends and some pending responses never got audio events,
+  // flush them to the transcript so content is never lost.
+  useEffect(() => {
+    if (!SYNC_TRANSCRIPT_WITH_LIVE_AUDIO) return;
+    if (debateRunning) return;
+    if (Object.keys(pendingResponses).length === 0) return;
+
+    const delayMs = sawLiveAudioRef.current ? 1500 : 0;
+    const flushTimer = setTimeout(() => {
+      const remaining = Object.values(pendingResponsesRef.current);
+      if (remaining.length === 0) return;
+
+      remaining.sort((a, b) => {
+        if (a.round_number !== b.round_number) {
+          return a.round_number - b.round_number;
+        }
+        if (a.exchange_number !== b.exchange_number) {
+          return a.exchange_number - b.exchange_number;
+        }
+        return a.received_at - b.received_at;
+      });
+
+      setRounds((prev) => [
+        ...prev,
+        ...remaining.map((item) => ({
+          id: `${item.round_number}-${item.exchange_number}-${item.agent}-${item.received_at}`,
+          decision_id: decisionId,
+          round_number: item.round_number,
+          exchange_number: item.exchange_number,
+          agent: item.agent,
+          content: item.content,
+          created_at: new Date(item.received_at).toISOString(),
+        })),
+      ]);
+
+      setStreamingMessages((prev) => {
+        const next = { ...prev };
+        for (const item of remaining) {
+          delete next[`${item.round_number}-${item.exchange_number}-${item.agent}`];
+        }
+        return next;
+      });
+
+      pendingResponsesRef.current = {};
+      setPendingResponses({});
+    }, delayMs);
+
+    return () => clearTimeout(flushTimer);
+  }, [debateRunning, decisionId, pendingResponses]);
+
+  useEffect(() => {
+    return () => {
+      if (revealTimerRef.current) {
+        clearInterval(revealTimerRef.current);
+        revealTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Auto-scroll as new content arrives
   useEffect(() => {
@@ -624,3 +838,4 @@ export default function DebateView({
     </div>
   );
 }
+
